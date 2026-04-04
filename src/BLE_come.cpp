@@ -14,6 +14,7 @@ BLEManager::BLEManager() {
     pServer = nullptr;
     pService = nullptr;
     pCharacteristic = nullptr;
+    pCCCD = nullptr;
     advertising = nullptr;
 }
 
@@ -34,10 +35,20 @@ void BLEManager::init() {
                       BLECharacteristic::PROPERTY_WRITE  |
                       BLECharacteristic::PROPERTY_NOTIFY 
                     );
-    pService->start();
     
-    pCharacteristic->addDescriptor(new BLE2902());
+    // Set permissions BEFORE adding descriptors
     pCharacteristic->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
+    
+    // Initialize characteristic value
+    pCharacteristic->setValue("Ready");
+    
+    // Add CCCD descriptor for notifications (must be before service start)
+    pCCCD = new BLE2902();
+    pCCCD->setAccessPermissions(ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE);
+    pCCCD->setValue((uint8_t[2]){0x00, 0x00}, 2);
+    pCharacteristic->addDescriptor(pCCCD);
+    
+    pService->start();
     
     advertising = BLEDevice::getAdvertising();
     advertising->addServiceUUID(SERVICE_UUID);
@@ -164,6 +175,7 @@ void BLEManager::onConnect(BLEServer* pSrv) {
     advertisingRunning = false; // Kapcsolatkor a hirdetes leall.
     this->pServer = pSrv;
     Serial.println("[BLE] Eszkoz csatlakozott");
+    
 }
 
 void BLEManager::onDisconnect(BLEServer* pSrv) {
@@ -266,4 +278,25 @@ void BLEManager::syncWhitelistFromBonded() {
 #endif */
 whitelistSynced = true; // Ne fusson újra
     Serial.println("[BLE] Whitelist szinkron kihagyva (RPA miatt kikapcsolva)");
+}
+
+void BLEManager::sendNotification(const String message) {
+    if (pCharacteristic == nullptr) {
+        Serial.println("[BLE] Nem lehet értesítést küldeni: karakterisztika nincs inicializálva");
+        return;
+    }
+    if (pServer == nullptr) {
+        Serial.println("[BLE] Nem lehet értesítést küldeni: szerver nincs inicializálva");
+        return;
+    }
+    
+    // Check if any client is connected (use getConnectedCount instead of getConnId)
+    if (pServer->getConnectedCount() == 0) {
+        Serial.println("[BLE] Nem lehet értesítést küldeni: nincs csatlakozott eszköz");
+        return;
+    }
+
+    pCharacteristic->setValue(message);
+    pCharacteristic->notify();
+    Serial.printf("[BLE] Értesítés küldve: %s\n", message.c_str());
 }

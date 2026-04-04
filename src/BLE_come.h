@@ -19,6 +19,7 @@ public:
     void startBLE();
     void stopBLE();
     void clearBonds();
+    void sendNotification(const String message);
 private:
     bool bleRunning=false;
     bool connectionProcessRunning = false;
@@ -32,6 +33,7 @@ private:
     BLEServer* pServer = nullptr;
     BLEService* pService = nullptr;
     BLECharacteristic* pCharacteristic = nullptr;
+    BLE2902* pCCCD = nullptr;
     BLEAdvertising* advertising=nullptr;
 
     void     ensureBleCccdNamespace();
