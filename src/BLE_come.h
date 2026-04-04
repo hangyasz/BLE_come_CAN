@@ -15,6 +15,7 @@ class BLEManager:public BLEServerCallbacks,
 public:
     BLEManager();   
     void init();
+    void tick();
     void startBLE();
     void stopBLE();
     void clearBonds();
@@ -22,16 +23,24 @@ private:
     bool bleRunning=false;
     bool connectionProcessRunning = false;
     bool advertisingRunning = false;
+    bool pairingWindowOpen = false;
+    bool whitelistSynced = false;
+    bool pendingAdvertisingRestart = false;
+    bool pendingWhitelistOnly = false;
+    uint32_t pairingWindowOpenedAtMs = 0;
+    uint32_t pairingWindowDurationMs = 60000;
     BLEServer* pServer = nullptr;
     BLEService* pService = nullptr;
     BLECharacteristic* pCharacteristic = nullptr;
     BLEAdvertising* advertising=nullptr;
 
+    void     ensureBleCccdNamespace();
     void     bleSecurity();
+    void     syncWhitelistFromBonded();
      // ---- BLEServerCallbacks ----
 
-    void onConnect(BLEServer* pServer)    override;
-    void onDisconnect(BLEServer* pServer) override;
+    void onConnect(BLEServer* pSrv)    override;
+    void onDisconnect(BLEServer* pSrv) override;
 
     // ---- BLESecurityCallbacks ----
     uint32_t onPassKeyRequest()                          override;

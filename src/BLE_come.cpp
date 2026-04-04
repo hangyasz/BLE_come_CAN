@@ -1,13 +1,13 @@
 #include "BLE_come.h"
 #include <nvs.h>
 #include <nvs_flash.h>
+#include <Preferences.h>
 #if defined(CONFIG_BLUEDROID_ENABLED)
 #include <esp_gap_ble_api.h>
 #endif
 
 
 BLEManager::BLEManager() {
-    // Csak inicializálunk tagváltozókat, BLE inicializáció nincs!
     bleRunning = false;
     connectionProcessRunning = false;
     advertisingRunning = false;
@@ -17,22 +17,16 @@ BLEManager::BLEManager() {
     advertising = nullptr;
 }
 
-/**
- * @brief Inicializálja a BLE eszközt és szervízt.
- * Ezt a setup()-ból kell hívni, nem a konstruktorból!
- */
 void BLEManager::init() {
-    Serial.println("[BLE] 1. BLEDevice::init()");
+    ensureBleCccdNamespace();
+
     BLEDevice::init(BLE_DEVICE_NAME);
     
-    Serial.println("[BLE] 2. setSecurityCallbacks()");
     BLEDevice::setSecurityCallbacks(this);
     
-    Serial.println("[BLE] 3. createServer()");
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(this);
 
-    Serial.println("[BLE] 4. createService()");
     pService = pServer->createService(SERVICE_UUID);
     pCharacteristic = pService->createCharacteristic(
                       CHARACTERISTIC_UUID,
@@ -42,21 +36,70 @@ void BLEManager::init() {
                     );
     pService->start();
     
-    Serial.println("[BLE] 5. setAccessPermissions()");
     pCharacteristic->addDescriptor(new BLE2902());
     pCharacteristic->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
     
-    Serial.println("[BLE] 6. getAdvertising()");
     advertising = BLEDevice::getAdvertising();
     advertising->addServiceUUID(SERVICE_UUID);
     advertising->setScanResponse(false);
     advertising->setMinPreferred(0x0);
-    
-    Serial.println("[BLE] 7. bleSecurity()");
+    // Biztonsági beállítások                
     bleSecurity();
+
+#if defined(CONFIG_BLUEDROID_ENABLED)
+    syncWhitelistFromBonded();
+    // Alap mod: csak korabban parositott (whitelistes) eszkozok csatlakozhatnak.
+advertising->setScanFilter(false, false);
+#endif
+
+    if (advertising->start()) {
+        advertisingRunning = true;
+        Serial.println("[BLE] Alap hirdetes aktiv (bondolt eszkozok barmikor visszacsatlakozhatnak)");
+    } else {
+        advertisingRunning = false;
+        Serial.println("[BLE] Alap hirdetes inditasa sikertelen");
+    }
     
-    Serial.println("[BLE] 8. init() vég");
     bleRunning = true;
+}
+
+void BLEManager::tick() {
+    // Whitelist szinkron (egyszer, induláskor)
+    if (!whitelistSynced && bleRunning) {
+        syncWhitelistFromBonded();
+    }
+
+    // Advertising újraindítás feldolgozása (sosem callbackből!)
+    if (pendingAdvertisingRestart && bleRunning && advertising != nullptr && !connectionProcessRunning) {
+        pendingAdvertisingRestart = false;
+#if defined(CONFIG_BLUEDROID_ENABLED)
+        advertising->setScanFilter(false, pendingWhitelistOnly);
+#endif
+        advertising->stop();
+        if (advertising->start()) {
+            advertisingRunning = true;
+            Serial.printf("[BLE] Hirdetés újraindítva (%s mód)\n",
+                          pendingWhitelistOnly ? "whitelist" : "nyílt");
+        }
+    }
+
+    // Párosítási ablak lejárat
+    if (pairingWindowOpen &&
+        (uint32_t)(millis() - pairingWindowOpenedAtMs) >= pairingWindowDurationMs) {
+
+        pairingWindowOpen = false;
+        pairingWindowOpenedAtMs = 0;
+        pendingAdvertisingRestart = true;
+        pendingWhitelistOnly = false;
+        Serial.println("[BLE] Párosítási ablak lejárt (60s)");
+    }
+}
+
+void BLEManager::ensureBleCccdNamespace() {
+    Preferences prefs;
+    if (prefs.begin("ble_cccd", false)) {
+        prefs.end();
+    }
 }
 
 
@@ -66,18 +109,18 @@ void BLEManager::startBLE() {
         return;
     }
 
-    // Ha már hirdetünk, ne csinálj semmit
-    if (advertisingRunning) {
-        Serial.println("[BLE] Hirdetés már aktív");
-        return;
-    }
-    
-    if (advertising->start()) {
-        advertisingRunning = true;
-        Serial.println("[BLE] Hirdetes elinditva");
-    } else {
-        Serial.println("[BLE] Hirdetes inditasa sikertelen");
-    }
+    // Parositasi ablak: uj eszkozok is csatlakozhatnak (PIN kotelező).
+    pairingWindowOpen = true;
+    pairingWindowOpenedAtMs = millis();
+
+    if (!advertisingRunning) {
+        if (advertising->start()) {
+            advertisingRunning = true;
+            Serial.println("[BLE] Parositasi hirdetes elinditva (uj eszkozok engedelyezve, 60s)");
+        } else {
+            Serial.println("[BLE] Parositasi hirdetes inditasa sikertelen");
+        }
+    } 
 }
 
 void BLEManager::stopBLE() {
@@ -86,6 +129,8 @@ void BLEManager::stopBLE() {
 
     advertising->stop();
     advertisingRunning = false;
+    pairingWindowOpen = false;
+    pairingWindowOpenedAtMs = 0;
     
     Serial.println("[BLE] Hirdetés leállítva (szerver és eszközök aktívak maradnak)");
 }
@@ -114,26 +159,22 @@ void BLEManager::clearBonds() {
     Serial.println("[BLE] Bond rekordok torolve. Telefonon is torold a parositast, majd reset.");
 }
 
-void BLEManager::onConnect(BLEServer* pServer) {
+void BLEManager::onConnect(BLEServer* pSrv) {
     connectionProcessRunning = true;
     advertisingRunning = false; // Kapcsolatkor a hirdetes leall.
+    this->pServer = pSrv;
     Serial.println("[BLE] Eszkoz csatlakozott");
 }
 
-void BLEManager::onDisconnect(BLEServer* pServer) {
+void BLEManager::onDisconnect(BLEServer* pSrv) {
     connectionProcessRunning = false;
-    Serial.println("[BLE] Eszkoz lecsatlakozott");
+    this->pServer = pSrv;
+    Serial.println("[BLE] Eszköz lecsatlakozott");
 
-    // Automatikusan visszainditjuk a hirdetest, hogy ujra lehessen csatlakozni.
-    if (bleRunning && advertising != nullptr) {
-        if (advertising->start()) {
-            advertisingRunning = true;
-            Serial.println("[BLE] Hirdetes ujrainditva disconnect utan");
-        } else {
-            advertisingRunning = false;
-            Serial.println("[BLE] Hirdetes ujrainditasa sikertelen");
-        }
-    }
+    pairingWindowOpen = false;
+    // Itt is csak flag - ne hívj advertising API-t közvetlenül
+    pendingAdvertisingRestart = true;
+    pendingWhitelistOnly = false;
 }
 
 uint32_t BLEManager::onPassKeyRequest() {
@@ -157,11 +198,16 @@ bool BLEManager::onSecurityRequest() {
 
 void BLEManager::onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
     if (cmpl.success) {
-        Serial.println("[BLE] Hitelesítés sikeres");
+        BLEAddress peerAddr(cmpl.bd_addr);
+        BLEDevice::whiteListAdd(peerAddr);
+        Serial.printf("[BLE] Hitelesítés OK: %s\n", peerAddr.toString().c_str());
+
+        pairingWindowOpen = false;
+        pairingWindowOpenedAtMs = 0;
     } else {
         Serial.println("[BLE] Hitelesítés sikertelen");
-        if(pServer!= nullptr) {
-            pServer->removePeerDevice(pServer->getConnId(),true);
+        if (pServer != nullptr) {
+            pServer->disconnect(pServer->getConnId());
         }
     }
 }
@@ -171,17 +217,53 @@ void BLEManager::bleSecurity() {
     // belső security flag-jeit (így csatlakozáskor ténylegesen elindul a pairing).
     BLEDevice::setSecurityCallbacks(this);
 
-    // bonding = false -> minden újracsatlakozáskor új párosítás/PIN kérés
+    // bonding = true -> egyszeri PIN, utana a mar parositott telefon PIN nelkul visszajohet
     // mitm = true, sc = true -> PIN-kódos, biztonságos kapcsolat
-    BLESecurity::setAuthenticationMode(false, true, true);
+    BLESecurity::setAuthenticationMode(true, true, true);
     BLESecurity::setCapability(ESP_IO_CAP_OUT);
     BLESecurity::setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
     BLESecurity::setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
     BLESecurity::setKeySize(16);
 
-    // Random 6 jegyű PIN minden új kapcsolatnál
+    // Random 6 jegyű PIN uj parositasokhoz
     BLESecurity::setPassKey(false);
     BLESecurity::regenPassKeyOnConnect(true);
 
-    Serial.println("[BLE] Security aktiv: MITM + SC, BOND kikapcsolva (PIN minden csatlakozasnal)");
+    Serial.println("[BLE] Security aktiv: MITM + SC + BOND (ismert telefon visszacsatlakozik)");
+}
+
+void BLEManager::syncWhitelistFromBonded() {
+/* #if defined(CONFIG_BLUEDROID_ENABLED)
+    int dev_num = esp_ble_get_bond_device_num();
+    if (dev_num <= 0) {
+        Serial.println("[BLE] Nincs bond rekord, whitelist ures");
+        return;
+    }
+
+    esp_ble_bond_dev_t *bond_dev = (esp_ble_bond_dev_t *)malloc(sizeof(esp_ble_bond_dev_t) * dev_num);
+    if (!bond_dev) {
+        Serial.println("[BLE] Nem sikerult memoriat foglalni a bond listahoz");
+        return;
+    }
+
+    int copied = dev_num;
+    esp_err_t ret = esp_ble_get_bond_device_list(&copied, bond_dev);
+    if (ret != ESP_OK) {
+        Serial.printf("[BLE] Bond lista lekeresi hiba: %d\n", (int)ret);
+        free(bond_dev);
+        return;
+    }
+
+    for (int i = 0; i < copied; i++) {
+        BLEAddress addr(bond_dev[i].bd_addr);
+        BLEDevice::whiteListAdd(addr);
+        Serial.printf("[BLE] Bondolt eszkoz a whitelisthez adva: %s\n", addr.toString().c_str());
+    }
+
+    free(bond_dev);
+    Serial.printf("[BLE] Whitelist szinkron kesz (%d bondolt eszkoz)\n", copied);
+    whitelistSynced = true;
+#endif */
+whitelistSynced = true; // Ne fusson újra
+    Serial.println("[BLE] Whitelist szinkron kihagyva (RPA miatt kikapcsolva)");
 }

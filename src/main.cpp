@@ -30,6 +30,8 @@ void setup() {
 
 
 void loop() {
+  bleManager.tick();
+
   if(digitalRead(butonPin) == LOW) {
     delay(1000); // Debounce
     
