@@ -98,16 +98,12 @@ void BLEManager::startBLE() {
     advertising->stop();
     delay(50);
     advertising->start();
-    advertisingRunning = true;
-
     Serial.printf("[BLE] Pairing window opened (60s)\n");
     pairingWindowOpenedAtMs = millis();
 }
 
 void BLEManager::stopBLE() {
-    if (!advertisingRunning) return;
     advertising->stop();
-    advertisingRunning = false;
     pairingWindowOpen = false;
     pairingWindowOpenedAtMs = 0;
     Serial.println("[BLE] Advertising stopped");
@@ -146,22 +142,26 @@ void BLEManager::onConnect(BLEServer* pSrv) {
     }
 
     // Normal mode: enforce max paired connections
-    if (!pairingWindowOpen && (int)pSrv->getConnectedCount() > BLE_MAX_PAIRED) {
+    if (!pairingWindowOpen && (int)pSrv->getConnectedCount() > 1) {
         Serial.printf("[BLE] Max connections (%d) reached → rejecting\n",
                       BLE_MAX_PAIRED);
         pSrv->disconnect(connId);
         return;
     }
 
-    connectionProcessRunning = true;
-    advertisingRunning = false;
-}
+    connectionProcessRunning = true;}
 
 void BLEManager::onDisconnect(BLEServer* pSrv) {
     this->pServer = pSrv;
     connectionProcessRunning = false;
-    Serial.printf("[BLE] Disconnected – remaining=%d\n",
-                  pSrv->getConnectedCount());
+
+
+     // If we have no more connections, clear the connected MAC (for security)
+     if (pSrv->getConnectedCount() == 0) {
+         memset(_connectedMac, 0, 6);
+     }
+
+     // If we were waiting for a name during pairing, abort and remove bond
 
     // If pairing was in progress, remove the bond
     if (_waitingForName) {
@@ -172,6 +172,9 @@ void BLEManager::onDisconnect(BLEServer* pSrv) {
     _waitingForName = false;
     memset(_connectedMac, 0, 6);
     pairingWindowOpen = false;
+
+     Serial.printf("[BLE] Disconnected: conn_id=%d active=%d\n", pSrv->getConnId(),
+                   pSrv->getConnectedCount());
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -316,7 +319,6 @@ void BLEManager::_startAdvertising() {
      advertising->setScanFilter(false, false);
 
     if (advertising->start()) {
-        advertisingRunning = true;
         Serial.println("[BLE] Hirdetés aktív");
     } else {
         Serial.println("[BLE] Hirdetés indítása SIKERTELEN");

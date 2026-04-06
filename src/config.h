@@ -10,8 +10,8 @@
 #define BLE_MAX_STORED          10
 
 // --- CAN (TWAI) pinout -------------------------------------
-#define PIN_CAN_TX          1   // SN65HVD230 TXD
-#define PIN_CAN_RX          3   // SN65HVD230 RXD
+#define PIN_CAN_TX          17  // SN65HVD230 TXD (CTX)
+#define PIN_CAN_RX          16  // SN65HVD230 RXD (CRX)
 
 
 

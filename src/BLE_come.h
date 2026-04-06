@@ -40,7 +40,6 @@ private:
     BLEAdvertising*    advertising     = nullptr;
 
     // ── Flagek ───────────────────────────────────────────
-    bool     advertisingRunning  = false;
     bool     pairingWindowOpen   = false;
     bool     connectionProcessRunning = false;
     uint32_t pairingWindowOpenedAtMs = 0;
