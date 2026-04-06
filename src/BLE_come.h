@@ -7,48 +7,57 @@
 #include <BLEServer.h>
 #include <BLESecurity.h>
 #include <BLEUtils.h>
+#include "BleDevices.h"
 
-
-
-class BLEManager:public BLEServerCallbacks,
-                public BLESecurityCallbacks {
+class BLEManager : public BLEServerCallbacks,
+                   public BLESecurityCallbacks,
+                   public BLECharacteristicCallbacks {
 public:
-    BLEManager();   
+    BLEManager() = default;
+
+    void setDeviceRegistry(BleDevices* registry);
     void init();
     void tick();
-    void startBLE();
-    void stopBLE();
+    void startBLE();    // Párosítási ablak megnyitása
+    void stopBLE();     // Hirdetés leállítása
     void clearBonds();
-    void sendNotification(const String message);
+    void sendNotification(const String& message);
+
 private:
-    bool bleRunning=false;
-    bool connectionProcessRunning = false;
-    bool advertisingRunning = false;
-    bool pairingWindowOpen = false;
-    bool whitelistSynced = false;
-    bool pendingAdvertisingRestart = false;
-    bool pendingWhitelistOnly = false;
-    uint32_t pairingWindowOpenedAtMs = 0;
-    uint32_t pairingWindowDurationMs = 60000;
-    BLEServer* pServer = nullptr;
-    BLEService* pService = nullptr;
+    BleDevices* _registry = nullptr;
+
+    // ── Aktív munkamenet ──────────────────────────────────
+    esp_bd_addr_t _connectedMac = {};
+    uint16_t      _connectedId  = 0;
+    bool          _waitingForName = false;
+    uint32_t      _nameRequestTimestamp = 0;
+    uint32_t      _authStateEnteredMs = 0;
+
+    // ── BLE objektumok ────────────────────────────────────
+    BLEServer*         pServer         = nullptr;
+    BLEService*        pService        = nullptr;
     BLECharacteristic* pCharacteristic = nullptr;
-    BLE2902* pCCCD = nullptr;
-    BLEAdvertising* advertising=nullptr;
+    BLEAdvertising*    advertising     = nullptr;
 
-    void     ensureBleCccdNamespace();
-    void     bleSecurity();
-    void     syncWhitelistFromBonded();
-     // ---- BLEServerCallbacks ----
+    // ── Flagek ───────────────────────────────────────────
+    bool     advertisingRunning  = false;
+    bool     pairingWindowOpen   = false;
+    bool     connectionProcessRunning = false;
+    uint32_t pairingWindowOpenedAtMs = 0;
 
-    void onConnect(BLEServer* pSrv)    override;
-    void onDisconnect(BLEServer* pSrv) override;
+    // ── Privát metódusok ──────────────────────────────────
+    void _bleSecurity();
+    void _abortPairing();
+    void _startAdvertising();
 
-    // ---- BLESecurityCallbacks ----
-    uint32_t onPassKeyRequest()                          override;
-    void     onPassKeyNotify(uint32_t pass_key)          override;
-    bool     onConfirmPIN(uint32_t pass_key)             override;
-    bool     onSecurityRequest()                         override;
+    // ── Callbacks ─────────────────────────────────────────
+    void     onConnect(BLEServer* pSrv)                         override;
+    void     onDisconnect(BLEServer* pSrv)                      override;
+    uint32_t onPassKeyRequest()                                  override;
+    void     onPassKeyNotify(uint32_t pass_key)                  override;
+    bool     onConfirmPIN(uint32_t pass_key)                     override;
+    bool     onSecurityRequest()                                 override;
     void     onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override;
-    
+    void     onRead(BLECharacteristic* pChar)                    override;
+    void     onWrite(BLECharacteristic* pChar)                   override;
 };
