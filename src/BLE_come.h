@@ -44,8 +44,8 @@ private:
     // ── Flagek ───────────────────────────────────────────
     bool     pairingWindowOpen   = false;
     bool     connectionProcessRunning = false;
+    bool     pendingAdvertisingRestart    = false;
     uint32_t pairingWindowOpenedAtMs = 0;
-
     WifiBridge _wifiBridge;
 
     // ── Privát metódusok ──────────────────────────────────

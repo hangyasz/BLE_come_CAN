@@ -25,20 +25,23 @@ void BLEManager::init() {
         BLECharacteristic::PROPERTY_WRITE |
         BLECharacteristic::PROPERTY_NOTIFY
     );
-    pCharacteristic->setAccessPermissions(
-        ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
-    pCharacteristic->setValue("READY");
+
+    // Add descriptors BEFORE starting service
     pCharacteristic->addDescriptor(new BLE2902());
+    pCharacteristic->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
     pCharacteristic->setCallbacks(this);
- 
+
+    pServer->start();
     pService->start();
- 
+
+    // Start service AFTER all descriptor and permission setup
     advertising = BLEDevice::getAdvertising();
     advertising->addServiceUUID(SERVICE_UUID);
     advertising->setScanResponse(false);
     advertising->setMinPreferred(0x0);
- 
+
     _bleSecurity(); 
+    delay(100);  // BLE stack stabilizálása
     _startAdvertising();
 }
 
@@ -47,6 +50,12 @@ void BLEManager::init() {
 // ═══════════════════════════════════════════════════════════
 
 void BLEManager::tick() {
+
+    if (pendingAdvertisingRestart) {
+        pendingAdvertisingRestart = false;
+        _startAdvertising();
+    }
+    
     // Pairing window timeout (60s)
     if (pairingWindowOpen &&
         (uint32_t)(millis() - pairingWindowOpenedAtMs) >= PAIRING_WINDOW_MS) {
@@ -157,26 +166,24 @@ void BLEManager::onDisconnect(BLEServer* pSrv) {
     this->pServer = pSrv;
     connectionProcessRunning = false;
 
-
-     // If we have no more connections, clear the connected MAC (for security)
-     if (pSrv->getConnectedCount() == 0) {
-         memset(_connectedMac, 0, 6);
-     }
-
-     // If we were waiting for a name during pairing, abort and remove bond
-
-    // If pairing was in progress, remove the bond
+    // Fix #2: bond törlés ELŐTT, amíg a MAC még érvényes
     if (_waitingForName) {
         Serial.println("[BLE] Pairing aborted → removing bond");
         esp_ble_remove_bond_device(_connectedMac);
+        pairingWindowOpen = false;  // Fix #1: ide kerül
     }
 
     _waitingForName = false;
     memset(_connectedMac, 0, 6);
-    pairingWindowOpen = false;
 
-     Serial.printf("[BLE] Disconnected: conn_id=%d active=%d\n", pSrv->getConnId(),
-                   pSrv->getConnectedCount());
+    // Fix #3: ESP32 quirk kompenzáció (a count 1-gyel nagyobb callbackben)
+    uint32_t realCount = pSrv->getConnectedCount();
+    if (realCount > 0) realCount--;
+    Serial.printf("[BLE] Disconnected: conn_id=%d active=%d\n",
+                  pSrv->getConnId(), realCount);
+
+    pendingAdvertisingRestart = true;  // Restart advertising in tick() to avoid stack issues
+
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -192,12 +199,7 @@ void BLEManager::onPassKeyNotify(uint32_t key) {
 bool BLEManager::onConfirmPIN(uint32_t) { return true; }
 
 bool BLEManager::onSecurityRequest() { 
-    if (!pairingWindowOpen) {
-        Serial.println("[BLE] Security request rejected - pairing window closed");
-        return false;  // Reject pairing, no PIN will appear
-    }
-    Serial.println("[BLE] Security request accepted - pairing window open");
-    return true;
+   return true;
 }
 
 void BLEManager::onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
@@ -251,7 +253,6 @@ void BLEManager::onWrite(BLECharacteristic* pChar) {
     
 
     if (value == "WIFI:START") {
-
         if (!_wifiBridge.start()) {
             sendNotification("ERR:WIFI_START");
             return;
@@ -331,12 +332,13 @@ void BLEManager::_abortPairing() {
 }
 
 void BLEManager::_startAdvertising() {
-     advertising->setScanFilter(false, false);
-
+    advertising->stop();        // ← kötelező!
+    delay(200);                 // stack cleanup idő
+    advertising->setScanFilter(false, false);
     if (advertising->start()) {
-        Serial.println("[BLE] Hirdetés aktív");
+        Serial.println("[BLE] Advertising started");
     } else {
-        Serial.println("[BLE] Hirdetés indítása SIKERTELEN");
+        Serial.println("[BLE] Advertising FAILED");
     }
 }
 
@@ -348,7 +350,7 @@ void BLEManager::_bleSecurity() {
     BLESecurity::setKeySize(16);
     BLESecurity::setPassKey(false);
     BLESecurity::regenPassKeyOnConnect(true);
-    esp_ble_gap_config_local_privacy(true);
+    //esp_ble_gap_config_local_privacy(true);
 
     Serial.println("[BLE] Security: MITM + SC + BOND + Privacy");
 }

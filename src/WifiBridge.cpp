@@ -40,6 +40,10 @@ void WifiBridge::tick() {
         _client.print(WIFI_HELLO_MESSAGE);
         _lastHelloSentMs = millis();
     }
+    if(_client && !_client.connected()) {
+        Serial.println("[WIFI] TCP client disconnected");
+        _client.stop();
+    }
 }
 
 bool WifiBridge::isStarted() const {
