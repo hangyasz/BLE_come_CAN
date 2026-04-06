@@ -61,6 +61,8 @@ void BLEManager::tick() {
         Serial.println("[AUTH] Name request timeout → disconnecting");
         _abortPairing();
     }
+
+    _wifiBridge.tick();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -245,6 +247,19 @@ void BLEManager::onWrite(BLECharacteristic* pChar) {
     if (value.isEmpty()) return;
 
     Serial.printf("[BLE] ← Write: %s\n", value.c_str());
+
+    
+
+    if (value == "WIFI:START") {
+
+        if (!_wifiBridge.start()) {
+            sendNotification("ERR:WIFI_START");
+            return;
+        }
+
+        sendNotification(_wifiBridge.buildStartResponse());
+        return;
+    }
 
     // Name response: N:DeviceName
     if (value.startsWith("N:") && _waitingForName) {

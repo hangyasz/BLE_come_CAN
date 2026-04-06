@@ -8,6 +8,8 @@
 #include <BLESecurity.h>
 #include <BLEUtils.h>
 #include "BleDevices.h"
+#include "WifiBridge.h"
+
 
 class BLEManager : public BLEServerCallbacks,
                    public BLESecurityCallbacks,
@@ -43,6 +45,8 @@ private:
     bool     pairingWindowOpen   = false;
     bool     connectionProcessRunning = false;
     uint32_t pairingWindowOpenedAtMs = 0;
+
+    WifiBridge _wifiBridge;
 
     // ── Privát metódusok ──────────────────────────────────
     void _bleSecurity();

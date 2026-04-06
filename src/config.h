@@ -9,6 +9,14 @@
 #define BLE_MAX_PAIRED          5
 #define BLE_MAX_STORED          10
 
+
+// --- Wi-Fi AP + TCP stream --------------------------------
+#define WIFI_AP_SSID            "ESP32_Sniffer"
+#define WIFI_AP_PASSWORD        "TitkosWifi123"
+#define WIFI_TCP_PORT           23
+#define WIFI_HELLO_INTERVAL_MS  10
+#define WIFI_HELLO_MESSAGE      "hello wifi\n"
+
 // --- CAN (TWAI) pinout -------------------------------------
 #define PIN_CAN_TX          17  // SN65HVD230 TXD (CTX)
 #define PIN_CAN_RX          16  // SN65HVD230 RXD (CRX)
