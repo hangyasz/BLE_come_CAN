@@ -1,4 +1,4 @@
-#pragma once
+/* #pragma once
 
 #include <Arduino.h>
 #include "config.h"
@@ -63,4 +63,4 @@ private:
     void     onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override;
     void     onRead(BLECharacteristic* pChar)                    override;
     void     onWrite(BLECharacteristic* pChar)                   override;
-};
+}; */

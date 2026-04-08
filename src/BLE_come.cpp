@@ -1,4 +1,4 @@
-#include "BLE_come.h"
+/* #include "BLE_come.h"
 #include "BleDevices.h"
 #include "config.h"
 
@@ -31,7 +31,6 @@ void BLEManager::init() {
     pCharacteristic->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED | ESP_GATT_PERM_WRITE_ENCRYPTED);
     pCharacteristic->setCallbacks(this);
 
-    pServer->start();
     pService->start();
 
     // Start service AFTER all descriptor and permission setup
@@ -103,6 +102,7 @@ void BLEManager::startBLE() {
 
     pairingWindowOpen = true;
     _waitingForName = false;
+    _authStateEnteredMs = 0;
 
     // Open advertising for pairing
     advertising->setScanFilter(false, false);
@@ -153,7 +153,7 @@ void BLEManager::onConnect(BLEServer* pSrv) {
     }
 
     // Normal mode: enforce max paired connections
-    if (!pairingWindowOpen && (int)pSrv->getConnectedCount() > 1) {
+    if (!pairingWindowOpen && (int)pSrv->getConnectedCount() > BLE_MAX_PAIRED) {
         Serial.printf("[BLE] Max connections (%d) reached → rejecting\n",
                       BLE_MAX_PAIRED);
         pSrv->disconnect(connId);
@@ -182,7 +182,6 @@ void BLEManager::onDisconnect(BLEServer* pSrv) {
     Serial.printf("[BLE] Disconnected: conn_id=%d active=%d\n",
                   pSrv->getConnId(), realCount);
 
-    pendingAdvertisingRestart = true;  // Restart advertising in tick() to avoid stack issues
 
 }
 
@@ -230,11 +229,11 @@ void BLEManager::onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
         return;
     }
 
-    // Request device name
+    // Request device name: set timestamp before enabling timeout checks
+    _authStateEnteredMs = millis();
     _waitingForName = true;
-    sendNotification("REQUEST_NAME");  // TCP-like: must be confirmed
-    Serial.println("[AUTH] New device detected → requesting name (with indication)");
-    _authStateEnteredMs = millis();  // Start timeout BEFORE sending
+    sendNotification("REQUEST_NAME");
+    Serial.println("[AUTH] New device detected → requesting name");
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -335,22 +334,18 @@ void BLEManager::_startAdvertising() {
     advertising->stop();        // ← kötelező!
     delay(200);                 // stack cleanup idő
     advertising->setScanFilter(false, false);
-    if (advertising->start()) {
-        Serial.println("[BLE] Advertising started");
-    } else {
-        Serial.println("[BLE] Advertising FAILED");
-    }
+    advertising->start();
+    Serial.println("[BLE] Advertising started");
 }
 
 void BLEManager::_bleSecurity() {
-    BLESecurity::setAuthenticationMode(true, true, true);  // bond, mitm, sc
-    BLESecurity::setCapability(ESP_IO_CAP_OUT);            // PIN display
-    BLESecurity::setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
-    BLESecurity::setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
-    BLESecurity::setKeySize(16);
-    BLESecurity::setPassKey(false);
-    BLESecurity::regenPassKeyOnConnect(true);
+    BLESecurity security;
+    security.setAuthenticationMode(ESP_LE_AUTH_REQ_MITM_BOND);
+    security.setCapability(ESP_IO_CAP_OUT);  // PIN display
+    security.setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+    security.setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+    security.setKeySize(16);
     //esp_ble_gap_config_local_privacy(true);
 
-    Serial.println("[BLE] Security: MITM + SC + BOND + Privacy");
-}
+    Serial.println("[BLE] Security configured (MITM + BOND)");
+} */
