@@ -67,25 +67,10 @@ int BleDevices::count() const { return (int)devices.size(); }
 bool BleDevices::isFull() const { return (int)devices.size() >= BLE_MAX_STORED; }
 
 const std::vector<DeviceRecord>& BleDevices::getDevices() const { return devices; }
-
+// BleDevices::clearAll()
 void BleDevices::clearAll() {
     devices.clear();
     store.saveDevices(devices);
-
-    int n = esp_ble_get_bond_device_num();
-    if (n > 0) {
-        auto* list = (esp_ble_bond_dev_t*)malloc(sizeof(esp_ble_bond_dev_t) * n);
-        if (list) {
-            esp_ble_get_bond_device_list(&n, list);
-            for (int i = 0; i < n; i++)
-                esp_ble_remove_bond_device(list[i].bd_addr);
-            free(list);
-        }
-    }
-
-    nvs_flash_deinit();
-    if (nvs_flash_erase() != ESP_OK || nvs_flash_init() != ESP_OK)
-        Serial.println("[BleDevices] NVS törlési hiba!");
-    else
-        Serial.println("[BleDevices] Törölve. Telefonon is töröld, majd reset.");
+    // NimBLE bond törlés NEM itt
+    Serial.println("[BleDevices] Törölve. Telefonon is töröld, majd reset.");
 }

@@ -6,8 +6,7 @@
 
 #define PAIRING_WINDOW_MS      60000   // 60s
 #define NAME_REQUEST_TIMEOUT_MS 30000  // 30s
-#define BLE_MAX_PAIRED          5
-#define BLE_MAX_STORED          10
+#define BLE_MAX_STORED          5
 
 
 // --- Wi-Fi AP + TCP stream --------------------------------

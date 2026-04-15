@@ -76,14 +76,15 @@ void BLEManager::init()
     // NimBLE: READ_ENC / WRITE_ENC replace setAccessPermissions(ESP_GATT_PERM_*_ENCRYPTED).
     // BLE2902 descriptor is NOT needed — NimBLE adds the CCCD automatically for NOTIFY.
     pCharacteristic = pService->createCharacteristic(
-        CHARACTERISTIC_UUID,
-        NIMBLE_PROPERTY::READ |
-            NIMBLE_PROPERTY::WRITE |
-            NIMBLE_PROPERTY::NOTIFY);
+    CHARACTERISTIC_UUID,
+    NIMBLE_PROPERTY::READ       |
+    NIMBLE_PROPERTY::READ_ENC   |
+    NIMBLE_PROPERTY::WRITE     | 
+    NIMBLE_PROPERTY::WRITE_ENC  |
+    NIMBLE_PROPERTY::NOTIFY);
     pCharacteristic->setCallbacks(this);
     pCharacteristic->setValue("READY"); // Set initial value so reads don't timeout
-
-    pServer->advertiseOnDisconnect(true);
+    
     pServer->start();
 
     advertising = NimBLEDevice::getAdvertising();
@@ -115,7 +116,6 @@ void BLEManager::tick()
             Serial.println("[BLE] Pairing window expired");
         }
 
-        // Name request timeout (10s) - only if timestamp was set by onAuthenticationComplete
         if (_waitingForName &&
             _authStateEnteredMs > 0 &&
             (uint32_t)(millis() - _authStateEnteredMs) >= NAME_REQUEST_TIMEOUT_MS)
@@ -130,7 +130,7 @@ void BLEManager::tick()
 // PUBLIC CONTROL
 // ═══════════════════════════════════════════════════════════
 
-void BLEManager::startBLE()
+void BLEManager::startParing()
 {
     if (!advertising)
         return;
@@ -183,14 +183,13 @@ void BLEManager::stopBLE()
     Serial.println("[BLE] Advertising stopped");
 }
 
-void BLEManager::clearBonds()
-{
+// BLEManager::clearBonds()
+void BLEManager::clearBonds() {
     Serial.println("[BLE] Clearing all bonds and devices...");
     _waitingForName = false;
+    NimBLEDevice::deleteAllBonds(); // ← itt
     if (_registry)
-        _registry->clearAll();
-    // Optionally wipe all NimBLE bonds too:
-    // NimBLEDevice::deleteAllBonds();
+        _registry->clearAll();      // ← ez csak store + devices.clear()
 }
 
 void BLEManager::sendNotification(const String &message)
@@ -218,27 +217,21 @@ void BLEManager::onConnect(NimBLEServer *pSrv, NimBLEConnInfo &connInfo)
     Serial.printf("[BLE] Connected: conn_id=%d active=%d\n", connId,
                   pSrv->getConnectedCount());
 
-    // Reset name request state (prevent stale timeout from previous connection)
+    // Max 1 eszköz — ha már van valaki csatlakozva, dobja el az újat
+    if (pSrv->getConnectedCount() > 1) {
+        Serial.println("[BLE] Max 1 connection allowed → rejecting");
+        pSrv->disconnect(connId);
+        return;
+    }
+
+    // Reset name request state
     _waitingForName = false;
     _authStateEnteredMs = 0;
-
-    // Pairing mode: only one device at a time
-    if (pairingWindowOpen && pSrv->getConnectedCount() > 1)
-    {
-        Serial.println("[BLE] Pairing in progress → parallel connection rejected");
-        pSrv->disconnect(connId);
-        return;
-    }
-
-    // Normal mode: enforce max paired connections
-    if (!pairingWindowOpen && (int)pSrv->getConnectedCount() > 1)
-    {
-        Serial.printf("[BLE] Max connections (%d) reached → rejecting\n", BLE_MAX_PAIRED);
-        pSrv->disconnect(connId);
-        return;
-    }
-
     connectionProcessRunning = true;
+
+    // Ha már van bonded eszköz és nincs párosítási ablak,
+    // állítsd le az advertisinget — ne csatlakozhasson más
+    advertising->stop();
 }
 
 void BLEManager::onDisconnect(NimBLEServer *pSrv, NimBLEConnInfo &connInfo, int reason)
@@ -246,17 +239,22 @@ void BLEManager::onDisconnect(NimBLEServer *pSrv, NimBLEConnInfo &connInfo, int 
     this->pServer = pSrv;
     connectionProcessRunning = false;
 
-    // Bond removal BEFORE clearing the address (MAC still valid here)
-    if (_waitingForName)
-    {
+    if (_waitingForName) {
         Serial.println("[BLE] Pairing aborted → removing bond");
         NimBLEDevice::deleteBond(_connectedAddr);
-        pairingWindowOpen = false;
     }
 
     Serial.printf("[BLE] Disconnected: %s\n", connInfo.getAddress().toString().c_str());
-    _connectedAddr = NimBLEAddress(); // Clear connected address
+    _connectedAddr = NimBLEAddress();
     _waitingForName = false;
+    pairingWindowOpen = false;
+    pairingWindowOpenedAtMs = 0;
+    _authStateEnteredMs = 0;
+
+    // Csak akkor hirdet újra, ha tényleg nincs senki
+    if (pSrv->getConnectedCount() == 0) {
+        _startAdvertising();
+    }
 }
 
 // Called by NimBLE when passkey-display pairing is used.
@@ -288,32 +286,15 @@ void BLEManager::onAuthenticationComplete(NimBLEConnInfo &connInfo)
         return;
     }
 
-    // NimBLE: address comes from connInfo.getAddress()
-    NimBLEAddress addr = connInfo.getAddress();
-    _connectedAddr = addr;
-
-    Serial.printf("[BLE] BLE bond OK: %s\n", addr.toString().c_str());
-
-    // Convert to raw bytes for registry lookup (6 bytes, little-endian like esp_bd_addr_t)
-    const uint8_t *rawMac = addr.getVal();
-
-    // Check if this is a known device
-    if (_registry && _registry->containsMac(rawMac))
-    {
-        char name[33] = {};
-        _registry->getName(rawMac, name, sizeof(name));
-        Serial.printf("[AUTH] Known device: \"%s\" → OK\n", name);
-        sendNotification("RECOGNIZED");
-        _waitingForName = false;
-        return;
-    }
-
-    // New device: always request name after successful encryption
-    // (pairing window may have closed during pairing negotiation; that's OK)
+    if(pairingWindowOpen){
+    _connectedAddr = connInfo.getAddress();;
     _waitingForName = true;
     sendNotification("REQUEST_NAME");
     Serial.println("[AUTH] New device detected → requesting name");
     _authStateEnteredMs = millis();
+    return;
+    }
+    _abortPairing();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -336,19 +317,6 @@ void BLEManager::onWrite(NimBLECharacteristic *pChar, NimBLEConnInfo &connInfo)
 
     Serial.printf("[BLE] ← Write: %s\n", value.c_str());
 
-    if (value == "WIFI:START")
-    {
-        if (!_wifiBridge.start())
-        {
-            sendNotification("ERR:WIFI_START");
-            return;
-        }
-
-        g_wifiBridge = &_wifiBridge;
-        startwifiTickTaskIfNeeded();
-        sendNotification(_wifiBridge.buildStartResponse());
-        return;
-    }
 
     // Name response: N:DeviceName
     if (value.startsWith("N:") && _waitingForName)
@@ -376,6 +344,25 @@ void BLEManager::onWrite(NimBLECharacteristic *pChar, NimBLEConnInfo &connInfo)
         Serial.printf("[BLE] Paired: %s\n", name.c_str());
         return;
     }
+
+    if (_waitingForName) {
+        return;
+    }
+    
+    if (value == "WIFI:START")
+    {
+        if (!_wifiBridge.start())
+        {
+            sendNotification("ERR:WIFI_START");
+            return;
+        }
+
+        g_wifiBridge = &_wifiBridge;
+        startwifiTickTaskIfNeeded();
+        sendNotification(_wifiBridge.buildStartResponse());
+        return;
+    }
+
 
     // LIST command
     if (value == "LIST")
@@ -440,8 +427,7 @@ void BLEManager::_startAdvertising()
 {
     advertising->stop();
     delay(200); // stack cleanup time
-    advertising->setScanFilter(false, false);
-    advertising->enableScanResponse(true);
+   advertising->setScanFilter(false, false);
     advertising->setName(BLE_DEVICE_NAME);
     if (advertising->start())
     {

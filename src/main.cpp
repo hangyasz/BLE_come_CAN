@@ -105,7 +105,7 @@ void loop() {
         bleManager.clearBonds();
     } else {
         Serial.println("[SYSTEM] Rövid nyomás detektálva - Hirdetés indítása...");
-        bleManager.startBLE();
+        bleManager.startParing();
         startBleTickTaskIfNeeded();
     }
   }

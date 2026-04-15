@@ -9,8 +9,6 @@
 #include "BleDevices.h"
 #include "WifiBridge.h"
 
-// NimBLE v2.x: security callbacks are merged into NimBLEServerCallbacks.
-// There is no separate NimBLESecurityCallbacks class.
 
 class BLEManager : public NimBLEServerCallbacks,
                    public NimBLECharacteristicCallbacks {
@@ -20,7 +18,7 @@ public:
     void setDeviceRegistry(BleDevices* registry);
     void init();
     void tick();
-    void startBLE();    // Párosítási ablak megnyitása
+    void startParing();    // Párosítási ablak megnyitása
     void stopBLE();     // Hirdetés leállítása
     void clearBonds();
     void sendNotification(const String& message);
@@ -30,7 +28,7 @@ private:
     BleDevices* _registry = nullptr;
 
     // ── Aktív munkamenet ──────────────────────────────────
-    NimBLEAddress _connectedAddr;           // replaces esp_bd_addr_t _connectedMac
+    NimBLEAddress _connectedAddr;
     uint16_t      _connectedId  = 0;
     bool          _waitingForName = false;
     uint32_t      _nameRequestTimestamp = 0;
@@ -45,7 +43,6 @@ private:
     // ── Flagek ───────────────────────────────────────────
     bool     pairingWindowOpen        = false;
     bool     connectionProcessRunning = false;
-    bool     pendingAdvertisingRestart = false;
     uint32_t pairingWindowOpenedAtMs  = 0;
     WifiBridge _wifiBridge;
 
