@@ -1,112 +1,144 @@
 #include <Arduino.h>
-#include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "BleDevices.h"
-#include "BleDeviceStore.h"
 #include "NimBLEManager.h"
+#include "config.h"
 
-// Global BLEManager instance
+#define BUTTON_PIN 0
+
 static BLEManager bleManager;
 static BleDevices bleDevices;
-
-
-static BLEManager* g_bleManager = nullptr;
 static TaskHandle_t g_bleTickTaskHandle = nullptr;
 
+// ── BLE tick task ──────────────────────────────────────────────
+void bleTickTask(void* pvParameters)
+{
+    BLEManager* mgr = static_cast<BLEManager*>(pvParameters);
+    Serial.println("[BLE-TICK] Task inditva");
 
-
-void bleTickTask(void* pvParameters) {
-    (void)pvParameters;
-    Serial.println("[BLE-TICK-TASK] Task indítva");
-    
-    while (1) {
-        if (!g_bleManager) {
-            break;
-        }
-
-        if (!g_bleManager->isPairingActive()) {
-            Serial.println("[BLE-TICK-TASK] Pairing vege - task leall");
-            break;
-        }
-
-        g_bleManager->tick();
-        vTaskDelay(pdMS_TO_TICKS(100));  // 100ms ellenőrzés
+    while (true)
+    {
+        mgr->tick();
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 
+    // Ide sosem jut el, de biztonság kedvéért:
+    TaskHandle_t h = g_bleTickTaskHandle;
     g_bleTickTaskHandle = nullptr;
-    vTaskDelete(nullptr);
+    vTaskDelete(h);
 }
 
-static void startBleTickTaskIfNeeded() {
-    if (g_bleTickTaskHandle != nullptr) {
-        return;
-    }
+static void startBleTickTask()
+{
+    if (g_bleTickTaskHandle != nullptr) return;
 
     xTaskCreatePinnedToCore(
         bleTickTask,
-        "BLE-Tick-Task",
+        "BLE-Tick",
         4096,
-        nullptr,
+        &bleManager,   // ✅ this helyett pointer átadás
         1,
         &g_bleTickTaskHandle,
-        1
-    );
+        1);
 }
 
-#define butonPin 0
 
+bool initCan(uint32_t speed) {
+  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(
+      CAN_TX, CAN_RX, TWAI_MODE_NORMAL);
 
+  twai_timing_config_t t_config;
+  switch (speed) {
+    case 125000:
+      t_config = TWAI_TIMING_CONFIG_125KBITS();
+      break;
+    case 250000:
+      t_config = TWAI_TIMING_CONFIG_250KBITS();
+      break;
+    case 500000:
+      t_config = TWAI_TIMING_CONFIG_500KBITS();
+      break;
+    case 1000000:
+      t_config = TWAI_TIMING_CONFIG_1MBITS();
+      break;
+    default:
+      return false;
+  }
 
-/**
- * @brief Arduino setup() - egyszer fut le induláskor
- */
-void setup() {
-    // Soros kommunikáció inicializálása nyomkövetéshez
+  twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+
+  if (twai_driver_install(&g_config, &t_config, &f_config) != ESP_OK) return false;
+  if (twai_start() != ESP_OK) return false;
+
+  return true;
+}
+
+// ── Setup ──────────────────────────────────────────────────────
+void setup()
+{
     Serial.begin(115200);
-    pinMode(butonPin, INPUT_PULLUP);
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
     delay(100);
 
-    g_bleManager = &bleManager;
-
-    
-    Serial.println("\n\n========================================");
-    Serial.println("[SYSTEM] ESP32 BLE Device - Startup");
-    Serial.println("========================================\n");
+    Serial.println("\n[SYSTEM] Startup");
 
     bleDevices.init();
-
-
     bleManager.setDeviceRegistry(&bleDevices);
 
-    // BLE Manager inicializálása
+    // ✅ CAN küldés callback regisztrálása
+    bleManager.setCanSendCallback([](uint32_t id, bool ext, uint8_t len, uint8_t* data) -> bool {
+        twai_message_t msg = {};
+        msg.extd             = ext ? 1 : 0;
+        msg.identifier       = id;
+        msg.data_length_code = len;
+        for (uint8_t i = 0; i < len; i++) msg.data[i] = data[i];
+        return twai_transmit(&msg, pdMS_TO_TICKS(10)) == ESP_OK;
+    });
+
+
     bleManager.init();
-    
-    Serial.println("[SYSTEM] Setup() kész");
+
+    // ✅ Tick task azonnal indul, mindig fut
+    startBleTickTask();
+
+    while (!initCan(PERIODIC_CAN_PERIOD_US)) {
+        Serial.println("[SYSTEM] Failed to initialize CAN bus");
+        delay(1000);
+    }
+
+
+    Serial.println("[SYSTEM] Kesz");
 }
 
+// ── Loop ───────────────────────────────────────────────────────
+void loop()
+{
+    if (digitalRead(BUTTON_PIN) == HIGH)
+    {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        return;
+    }
 
-void loop() {
+    // ✅ Helyes debounce: nyomás kezdetétől mérünk
+    uint32_t pressStart = millis();
+    delay(50); // debounce
 
-  if(digitalRead(butonPin) == LOW) {
-    delay(1000); // Debounce
-    
-    // Hosszú nyomás (>2s) = BOND lista törlése
-    // Rövid nyomás = Hirdetés indítása
-    
-    uint32_t pressTime = millis();
-    while(digitalRead(butonPin) == LOW) {
+    while (digitalRead(BUTTON_PIN) == LOW)
+    {
         delay(10);
     }
-    uint32_t pressDuration = millis() - pressTime;
-    
-    if (pressDuration > 2000) {
-        Serial.println("[SYSTEM] HOSSZÚ nyomás detektálva - BOND lista törlése...");
+
+    uint32_t duration = millis() - pressStart;
+
+    if (duration > 2000)
+    {
+        Serial.println("[BTN] Hosszu nyomas - bond torlese");
         bleManager.clearBonds();
-    } else {
-        Serial.println("[SYSTEM] Rövid nyomás detektálva - Hirdetés indítása...");
-        bleManager.startParing();
-        startBleTickTaskIfNeeded();
     }
-  }
+    else
+    {
+        Serial.println("[BTN] Rovid nyomas - pairing indit");
+        bleManager.startPairing(); // ✅ javított elírás
+    }
 }

@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include "driver/twai.h"
+
 
 #include "config.h"
 
@@ -21,5 +23,4 @@ private:
     WiFiClient _client;
     uint32_t _lastHelloSentMs = 0;
     uint32_t _lastClientActivityMs = 0;
-
 };

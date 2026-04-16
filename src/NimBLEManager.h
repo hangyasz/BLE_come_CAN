@@ -1,38 +1,41 @@
 #pragma once
 
 #include <Arduino.h>
-#include "config.h"
 #include <NimBLEDevice.h>
 #include <NimBLEServer.h>
-#include <NimBLEUtils.h>
 #include <NimBLEAdvertising.h>
 #include "BleDevices.h"
 #include "WifiBridge.h"
+#include "config.h"
 
+// CAN küldés callback – így a BLEManager nem függ közvetlenül a TWAI-tól
+typedef bool (*CanSendCallback)(uint32_t id, bool extended, uint8_t len, uint8_t* data);
 
 class BLEManager : public NimBLEServerCallbacks,
-                   public NimBLECharacteristicCallbacks {
+                   public NimBLECharacteristicCallbacks
+{
 public:
     BLEManager() = default;
 
     void setDeviceRegistry(BleDevices* registry);
+    void setCanSendCallback(CanSendCallback cb);  // CAN küldéshez
     void init();
     void tick();
-    void startParing();    // Párosítási ablak megnyitása
-    void stopBLE();     // Hirdetés leállítása
+    void startPairing();  
+    void stopBLE();
     void clearBonds();
     void sendNotification(const String& message);
     bool isPairingActive();
 
 private:
-    BleDevices* _registry = nullptr;
+    BleDevices*      registry  = nullptr;
+    CanSendCallback  canSendCb = nullptr;
+    WifiBridge       wifiBridge;
 
     // ── Aktív munkamenet ──────────────────────────────────
-    NimBLEAddress _connectedAddr;
-    uint16_t      _connectedId  = 0;
-    bool          _waitingForName = false;
-    uint32_t      _nameRequestTimestamp = 0;
-    uint32_t      _authStateEnteredMs = 0;
+    NimBLEAddress connectedAddr;
+    uint16_t      connectedHandle   = BLE_HS_CONN_HANDLE_NONE;
+    bool          waitingForName    = false;
 
     // ── BLE objektumok ────────────────────────────────────
     NimBLEServer*         pServer         = nullptr;
@@ -40,29 +43,35 @@ private:
     NimBLECharacteristic* pCharacteristic = nullptr;
     NimBLEAdvertising*    advertising     = nullptr;
 
-    // ── Flagek ───────────────────────────────────────────
-    bool     pairingWindowOpen        = false;
-    bool     connectionProcessRunning = false;
-    uint32_t pairingWindowOpenedAtMs  = 0;
-    WifiBridge _wifiBridge;
+    // ── Párosítási ablak ──────────────────────────────────
+    bool     pairingWindowOpen   = false;
+    uint32_t pairingWindowEndMs  = 0;
+    uint32_t nameWindowEndMs     = 0;
 
-    // ── Privát metódusok ──────────────────────────────────
-    void _bleSecurity();
-    void _abortPairing();
-    void _startAdvertising();
+    // ── WiFi task ─────────────────────────────────────────
+    TaskHandle_t wifiTaskHandle = nullptr;
+    void startWifiTaskIfNeeded();
+    static void wifiTickTask(void* pvParameters);
 
-    // ── NimBLEServerCallbacks ─────────────────────────────
-    void onConnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo)                override;
-    void onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int reason) override;
+    // ── Parancs feldolgozók ───────────────────────────────
+    void handleListCommand();
+    void handleDeleteCommand(const String& value);
+    void handleCanSendCommand(const String& value);
+    void handleWifiStart();
+    void handleWifiStop();
+    void handleNameWrite(const String& value, NimBLEConnInfo& connInfo);
+    void handleCanSpeedCommand(String value);
 
-    // Security callbacks (were BLESecurityCallbacks, now part of NimBLEServerCallbacks)
-    uint32_t onPassKeyDisplay();
-    void     onPassKeyEntry(NimBLEConnInfo& connInfo);
-    void     onConfirmPassKey(NimBLEConnInfo& connInfo, uint32_t passKey);
-    void     onAuthenticationComplete(NimBLEConnInfo& connInfo);
+    // ── Segéd ─────────────────────────────────────────────
+    void disconnectAndCleanup(bool deleteBond = true);
+    void resetPairingState();
+    void bleSecurity();
 
-    // ── NimBLECharacteristicCallbacks ─────────────────────
-    // NimBLE v2: callbacks also receive NimBLEConnInfo&
-    void onRead(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo)          override;
-    void onWrite(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo)         override;
+    // ── NimBLE callbacks ──────────────────────────────────
+    void     onConnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo)                override;
+    void     onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int reason) override;
+    uint32_t onPassKeyDisplay()                                                      override;
+    void     onAuthenticationComplete(NimBLEConnInfo& connInfo)                     override; // ✅ override
+    void     onRead(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo)          override;
+    void     onWrite(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo)         override;
 };

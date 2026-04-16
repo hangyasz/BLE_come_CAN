@@ -292,7 +292,8 @@ void BLEManager::onWrite(BLECharacteristic* pChar) {
             resp += "EMPTY";
         } else {
             bool first = true;
-            for (const auto& d : _registry->getDevices()) {
+            for (int i = 0; i < _registry->count(); ++i) {
+                const DeviceRecord& d = _registry->at((size_t)i);
                 if (!first) resp += ";";
                 resp += String(d.name) + "@" + getMacString(d.mac);
                 first = false;

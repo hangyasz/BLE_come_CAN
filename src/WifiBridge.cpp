@@ -1,5 +1,7 @@
 #include "WifiBridge.h"
 
+
+
 bool WifiBridge::start()
 {
     if (_started)
@@ -65,13 +67,26 @@ void WifiBridge::tick()
     }
 
     _lastClientActivityMs = millis();
+    
+    twai_message_t message;
 
-    // Client is connected: send periodic hello
-    if ((uint32_t)(millis() - _lastHelloSentMs) >= WIFI_HELLO_INTERVAL_MS)
-    {
-        _client.print(WIFI_HELLO_MESSAGE);
-        _lastHelloSentMs = millis();
+while 
+ (twai_receive(&message, pdMS_TO_TICKS(0)) == ESP_OK) {
+    Serial.print("ID: 0x");
+    Serial.print(message.identifier, HEX);
+
+    Serial.print(message.extd ? " EXT" : " STD");
+
+    Serial.print(" DLC: ");
+    Serial.print(message.data_length_code);
+
+    Serial.print(" DATA: ");
+    for (int i = 0; i < message.data_length_code; i++) {
+        Serial.printf("%02X ", message.data[i]);
     }
+
+    Serial.println();
+}
 }
 
 bool WifiBridge::isClientConnected()

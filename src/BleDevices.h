@@ -2,16 +2,18 @@
 
 #include <Arduino.h>
 #include <esp_gap_ble_api.h>
-#include <vector>
+#include <array>
 #include "BleDeviceStore.h"
 #include "config.h"
 #include <nvs_flash.h>
 
 class BleDevices {
 private:
-    std::vector<DeviceRecord> devices;
-    BleDeviceStore            store;
+    std::array<DeviceRecord, BLE_MAX_STORED> devices{};
+    size_t deviceCount = 0;
+    BleDeviceStore store;
     int findByMac(const uint8_t mac[6]) const;
+    bool saveCurrentDevices();
 
 public:
     BleDevices() = default;
@@ -24,9 +26,11 @@ public:
     bool removeDevice(const esp_bd_addr_t mac);
     bool containsMac(const esp_bd_addr_t mac) const;
     bool getName(const esp_bd_addr_t mac, char* outName, size_t maxLen) const;
+    bool   removeAt(size_t index);         // ✅ új: index alapú törlés
+    size_t getCount() const;               // ✅ const fix
     
-    int  count() const;
     bool isFull() const;
-    const std::vector<DeviceRecord>& getDevices() const;
+    const DeviceRecord* data() const;
+    const DeviceRecord& at(size_t index) const;
     void clearAll();
 };
