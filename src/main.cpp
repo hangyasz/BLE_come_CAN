@@ -4,6 +4,7 @@
 #include "BleDevices.h"
 #include "NimBLEManager.h"
 #include "config.h"
+#include "CanTask.h"
 
 #define BUTTON_PIN 0
 
@@ -40,39 +41,9 @@ static void startBleTickTask()
         &bleManager,   // ✅ this helyett pointer átadás
         1,
         &g_bleTickTaskHandle,
-        1);
+        0);
 }
 
-
-bool initCan(uint32_t speed) {
-  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(
-      CAN_TX, CAN_RX, TWAI_MODE_NORMAL);
-
-  twai_timing_config_t t_config;
-  switch (speed) {
-    case 125000:
-      t_config = TWAI_TIMING_CONFIG_125KBITS();
-      break;
-    case 250000:
-      t_config = TWAI_TIMING_CONFIG_250KBITS();
-      break;
-    case 500000:
-      t_config = TWAI_TIMING_CONFIG_500KBITS();
-      break;
-    case 1000000:
-      t_config = TWAI_TIMING_CONFIG_1MBITS();
-      break;
-    default:
-      return false;
-  }
-
-  twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-
-  if (twai_driver_install(&g_config, &t_config, &f_config) != ESP_OK) return false;
-  if (twai_start() != ESP_OK) return false;
-
-  return true;
-}
 
 // ── Setup ──────────────────────────────────────────────────────
 void setup()
@@ -107,7 +78,7 @@ void setup()
         delay(1000);
     }
 
-
+    startCanTask(&bleManager);
     Serial.println("[SYSTEM] Kesz");
 }
 

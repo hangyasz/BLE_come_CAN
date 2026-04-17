@@ -53,6 +53,7 @@ void WifiBridge::tick()
         if (incoming) {
             if (_client) _client.stop();
             _client = incoming;
+            _client.setNoDelay(true); // ✅ Nagyon fontos a gyorsasághoz!
             _lastHelloSentMs = 0;
             _lastClientActivityMs = millis();
             Serial.printf("[WIFI] TCP client connected: %s\n",
@@ -68,26 +69,46 @@ void WifiBridge::tick()
 
     _lastClientActivityMs = millis();
     
-    twai_message_t message;
+    // ✅ ÚJ: Kód a CAN Queue kiolvasására és bináris továbbítására
+    extern QueueHandle_t canRxQueue; // Hivatkozunk a globális sorra
+    if (canRxQueue != NULL && uxQueueMessagesWaiting(canRxQueue) > 0) {
+        twai_message_t msg;
+        uint8_t txBuffer[512]; // Kb. 36 CAN üzenet fér ide egyszerre
+        int offset = 0;
 
-while 
- (twai_receive(&message, pdMS_TO_TICKS(0)) == ESP_OK) {
-    Serial.print("ID: 0x");
-    Serial.print(message.identifier, HEX);
+        while (uxQueueMessagesWaiting(canRxQueue) > 0 && offset <= (sizeof(txBuffer) - 14)) {
+            if (xQueueReceive(canRxQueue, &msg, 0) == pdTRUE) {
+                txBuffer[offset++] = 0xAA; // Start byte
+                
+                // CAN ID (4 byte)
+                txBuffer[offset++] = (msg.identifier & 0xFF);
+                txBuffer[offset++] = ((msg.identifier >> 8) & 0xFF);
+                txBuffer[offset++] = ((msg.identifier >> 16) & 0xFF);
+                txBuffer[offset++] = ((msg.identifier >> 24) & 0xFF);
+                Serial.printf("[WIFI] CAN üzenet kiolvasva: ID=0x%X DLC=%d\n", msg.identifier, msg.data_length_code);
+                // DLC (1 byte)
+                txBuffer[offset++] = msg.data_length_code;
+                
+                // DATA (8 byte)
+                for (int i = 0; i < 8; i++) {
+                    txBuffer[offset++] = (i < msg.data_length_code) ? msg.data[i] : 0x00;
+                }
+                Serial.print(" DATA: ");
+                for (int i = 0; i < msg.data_length_code; i++) {
+                    Serial.printf("%02X ", msg.data[i]);
+                }
+                Serial.println();
+            }
+        }
 
-    Serial.print(message.extd ? " EXT" : " STD");
-
-    Serial.print(" DLC: ");
-    Serial.print(message.data_length_code);
-
-    Serial.print(" DATA: ");
-    for (int i = 0; i < message.data_length_code; i++) {
-        Serial.printf("%02X ", message.data[i]);
+        // Egyben elküldjük az összes összegyűjtött üzenetet a telefonnak
+        if (offset > 0) {
+            _client.write(txBuffer, offset);
+        }
     }
+}
 
-    Serial.println();
-}
-}
+
 
 bool WifiBridge::isClientConnected()
 {

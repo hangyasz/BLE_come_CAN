@@ -26,6 +26,7 @@ public:
     void clearBonds();
     void sendNotification(const String& message);
     bool isPairingActive();
+    bool iswifiactive();
 
 private:
     BleDevices*      registry  = nullptr;
@@ -71,6 +72,7 @@ private:
     void     onConnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo)                override;
     void     onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int reason) override;
     uint32_t onPassKeyDisplay()                                                      override;
+    void     onConfirmPassKey(NimBLEConnInfo& connInfo, uint32_t pin)                override;
     void     onAuthenticationComplete(NimBLEConnInfo& connInfo)                     override; // ✅ override
     void     onRead(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo)          override;
     void     onWrite(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo)         override;

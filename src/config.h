@@ -38,4 +38,3 @@ inline String getMacString(const uint8_t mac[6]) {
 static const uint32_t PERIODIC_CAN_PERIOD_US = 500000;
 bool initCan(uint32_t speed);
 
-

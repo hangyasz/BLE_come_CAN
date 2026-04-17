@@ -40,7 +40,7 @@ void BLEManager::startWifiTaskIfNeeded()
         this,          // ✅ this-t adjuk át, nem globális pointert
         1,
         &wifiTaskHandle,
-        1);
+        0);
 }
 void BLEManager::setDeviceRegistry(BleDevices* reg)
 {
@@ -70,7 +70,6 @@ void BLEManager::init()
 
     pCharacteristic->setCallbacks(this);
     pCharacteristic->setValue("READY");
-    pService->start();
 
     advertising = NimBLEDevice::getAdvertising();
     advertising->addServiceUUID(SERVICE_UUID);
@@ -364,6 +363,9 @@ void BLEManager::onConnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo)
 {
     Serial.printf("[BLE] Csatlakozott: %s\n", connInfo.getAddress().toString().c_str());
     NimBLEDevice::stopAdvertising();
+    
+    // Az új kapcsolat még nincs autentikálva - resetelni kell az előző handle-t
+    connectedHandle = BLE_HS_CONN_HANDLE_NONE;
 }
 
 void BLEManager::onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int reason)
@@ -386,6 +388,12 @@ uint32_t BLEManager::onPassKeyDisplay()
     return pin;
 }
 
+void BLEManager::onConfirmPassKey(NimBLEConnInfo& connInfo, uint32_t pin) // ✅ override a headerben
+{
+    Serial.printf("[BLE] PIN confirmation: %06u\n", pin);
+    NimBLEDevice::injectConfirmPasskey(connInfo, true);
+}
+
 void BLEManager::onAuthenticationComplete(NimBLEConnInfo& connInfo) // ✅ override a headerben
 {
     if (!registry)
@@ -394,18 +402,10 @@ void BLEManager::onAuthenticationComplete(NimBLEConnInfo& connInfo) // ✅ overr
         return;
     }
 
-    if (!connInfo.isEncrypted() || !pairingWindowOpen)
-    {
-        Serial.println("[AUTH] Sikertelen vagy ablak zarva");
-        NimBLEDevice::deleteBond(connInfo.getAddress());
-        pServer->disconnect(connInfo.getConnHandle());
-        return;
-    }
-
     connectedHandle = connInfo.getConnHandle();
     connectedAddr   = connInfo.getIdAddress();
 
-    // Ismert eszköz visszatért
+    // Ismert eszköz visszatért (működik akkor is, ha a párosítási ablak zárva van)
     if (registry->containsMac(connectedAddr.getVal()))
     {
         Serial.printf("[AUTH] Ismert eszkoz: %s\n", connectedAddr.toString().c_str());
@@ -414,6 +414,15 @@ void BLEManager::onAuthenticationComplete(NimBLEConnInfo& connInfo) // ✅ overr
         waitingForName     = false;
         nameWindowEndMs    = 0;
         sendNotification("OK:WELCOME_BACK");
+        return;
+    }
+
+    // Új eszköz - csak ha a párosítási ablak nyitva van
+    if (!pairingWindowOpen)
+    {
+        Serial.println("[AUTH] Párosítási ablak zárt, új eszköz nem engedélyezett");
+        NimBLEDevice::deleteBond(connInfo.getAddress());
+        pServer->disconnect(connInfo.getConnHandle());
         return;
     }
 
@@ -494,7 +503,10 @@ void BLEManager::handleNameWrite(const String& value, NimBLEConnInfo& connInfo)
     sendNotification("OK:PAIRED:" + name);
     Serial.printf("[AUTH] Parositva: %s\n", name.c_str());
 
-    resetPairingState();
+    // Csak a névkérési ablakot zárjuk, de a párosítási ablak marad nyitva
+    // hogy az ismert eszközök is tudjanak csatlakozni az ablak alatt
+    waitingForName     = false;
+    nameWindowEndMs    = 0;
 }
 
 
@@ -533,10 +545,15 @@ void BLEManager::bleSecurity()
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
     NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
     NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
-    NimBLEDevice::setSecurityPasskey(0);
+    // ✅ Nem rögzítjük a PIN-t, hanem hagyunk az onPassKeyDisplay() callback-et működni
 }
 
 bool BLEManager::isPairingActive()
 {
     return pairingWindowOpen || waitingForName;
+}
+
+bool BLEManager::iswifiactive()
+{
+    return wifiBridge.isClientConnected();
 }
