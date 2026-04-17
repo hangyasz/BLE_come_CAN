@@ -72,13 +72,14 @@ void BLEManager::init()
     pCharacteristic->setValue("READY");
 
     advertising = NimBLEDevice::getAdvertising();
-    advertising->addServiceUUID(SERVICE_UUID);
+    // ✅ NE hirdessük meg a Service UUID-t az advertising-ban
+    // Az app már ismeri az UUID-ket, csak a név alapján csatlakozik
     advertising->enableScanResponse(false);
     advertising->setName(BLE_DEVICE_NAME);
     advertising->setScanFilter(false, false);
     advertising->start();
 
-    Serial.println("[BLE] Advertising started");
+    Serial.println("[BLE] Advertising started (UUID rejtett)");
 }
 
 
