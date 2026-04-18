@@ -85,7 +85,6 @@ void WifiBridge::tick()
                 txBuffer[offset++] = ((msg.identifier >> 8) & 0xFF);
                 txBuffer[offset++] = ((msg.identifier >> 16) & 0xFF);
                 txBuffer[offset++] = ((msg.identifier >> 24) & 0xFF);
-                Serial.printf("[WIFI] CAN üzenet kiolvasva: ID=0x%X DLC=%d\n", msg.identifier, msg.data_length_code);
                 // DLC (1 byte)
                 txBuffer[offset++] = msg.data_length_code;
                 
@@ -93,11 +92,15 @@ void WifiBridge::tick()
                 for (int i = 0; i < 8; i++) {
                     txBuffer[offset++] = (i < msg.data_length_code) ? msg.data[i] : 0x00;
                 }
+
+        //write can data to serial for debug
+            /* erial.printf("[WIFI] CAN üzenet kiolvasva: ID=0x%X DLC=%d\n", msg.identifier, msg.data_length_code);
+
                 Serial.print(" DATA: ");
                 for (int i = 0; i < msg.data_length_code; i++) {
                     Serial.printf("%02X ", msg.data[i]);
                 }
-                Serial.println();
+                Serial.println(); */
             }
         }
 

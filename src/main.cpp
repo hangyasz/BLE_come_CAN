@@ -52,6 +52,7 @@ void setup()
     pinMode(BUTTON_PIN, INPUT_PULLUP);
     delay(100);
 
+
     Serial.println("\n[SYSTEM] Startup");
 
     bleDevices.init();

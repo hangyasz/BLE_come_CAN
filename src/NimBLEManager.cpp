@@ -26,7 +26,7 @@ void BLEManager::wifiTickTask(void* pvParameters)
     // ✅ Atomi törlés: előbb nullázunk, aztán töröljük a taskot
     TaskHandle_t h = self->wifiTaskHandle;
     self->wifiTaskHandle = nullptr;
-    vTaskDelete(h);
+    vTaskDelete(nullptr);
 }
 
 void BLEManager::startWifiTaskIfNeeded()
@@ -36,9 +36,9 @@ void BLEManager::startWifiTaskIfNeeded()
     xTaskCreatePinnedToCore(
         wifiTickTask,
         "WIFI-Tick",
-        4096,
+        8192,
         this,          // ✅ this-t adjuk át, nem globális pointert
-        1,
+        2,
         &wifiTaskHandle,
         0);
 }
@@ -365,8 +365,21 @@ void BLEManager::onConnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo)
     Serial.printf("[BLE] Csatlakozott: %s\n", connInfo.getAddress().toString().c_str());
     NimBLEDevice::stopAdvertising();
     
-    // Az új kapcsolat még nincs autentikálva - resetelni kell az előző handle-t
-    connectedHandle = BLE_HS_CONN_HANDLE_NONE;
+    connectedHandle = connInfo.getConnHandle();
+    connectedAddr   = connInfo.getIdAddress();
+    
+    // ✅ Azonnal ellenőrizzük, hogy ismert eszköz-e
+    if (registry && registry->containsMac(connectedAddr.getVal()))
+    {
+        Serial.printf("[AUTH] Ismert eszkoz visszacsatlakozva: %s\n", connectedAddr.toString().c_str());
+        pairingWindowOpen  = false;
+        pairingWindowEndMs = 0;
+        waitingForName     = false;
+        nameWindowEndMs    = 0;
+        // Rövid delay az enkriptálás időzítéséhez
+        vTaskDelay(pdMS_TO_TICKS(50));
+        sendNotification("OK:WELCOME_BACK");
+    }
 }
 
 void BLEManager::onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int reason)
@@ -377,6 +390,16 @@ void BLEManager::onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int 
     if (connectedHandle == connInfo.getConnHandle())
     {
         resetPairingState();
+    }
+
+    // ✅ Ha nincsen más kliens csatlakozva, leállítjuk a WiFi-t (felesleges fogyasztás)
+    if (pServer->getConnectedCount() == 0)
+    {
+        if (wifiBridge.isStarted())
+        {
+            wifiBridge.stop();
+            Serial.println("[WIFI] Auto leállítva - nincsen BLE kliens");
+        }
     }
 
     if (advertising) advertising->start();
@@ -403,18 +426,19 @@ void BLEManager::onAuthenticationComplete(NimBLEConnInfo& connInfo) // ✅ overr
         return;
     }
 
-    connectedHandle = connInfo.getConnHandle();
-    connectedAddr   = connInfo.getIdAddress();
+    // ✅ Az ismert eszközöket már az onConnect()-ben kezeljük
+    // Ez csak az ÚJ eszközöknél hívódik meg az autentikáció után
+    
+    if (connectedAddr != connInfo.getIdAddress())
+    {
+        connectedHandle = connInfo.getConnHandle();
+        connectedAddr   = connInfo.getIdAddress();
+    }
 
-    // Ismert eszköz visszatért (működik akkor is, ha a párosítási ablak zárva van)
+    // Már ismert eszköz? (nem kellene hogy ide érjen)
     if (registry->containsMac(connectedAddr.getVal()))
     {
         Serial.printf("[AUTH] Ismert eszkoz: %s\n", connectedAddr.toString().c_str());
-        pairingWindowOpen  = false;
-        pairingWindowEndMs = 0;
-        waitingForName     = false;
-        nameWindowEndMs    = 0;
-        sendNotification("OK:WELCOME_BACK");
         return;
     }
 
@@ -508,6 +532,8 @@ void BLEManager::handleNameWrite(const String& value, NimBLEConnInfo& connInfo)
     // hogy az ismert eszközök is tudjanak csatlakozni az ablak alatt
     waitingForName     = false;
     nameWindowEndMs    = 0;
+    pairingWindowOpen  = false;
+    pairingWindowEndMs = 0;
 }
 
 
