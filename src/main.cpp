@@ -1,9 +1,8 @@
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include "BleDevices.h"
 #include "NimBLEManager.h"
-#include "config.h"
+#include "Config.h"
 #include "CanTask.h"
 
 #define BUTTON_PIN 0
@@ -24,7 +23,6 @@ void bleTickTask(void* pvParameters)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    // Ide sosem jut el, de biztonság kedvéért:
     TaskHandle_t h = g_bleTickTaskHandle;
     g_bleTickTaskHandle = nullptr;
     vTaskDelete(h);

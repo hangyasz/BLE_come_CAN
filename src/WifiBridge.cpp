@@ -1,6 +1,18 @@
 #include "WifiBridge.h"
+#include <random>
 
-
+String WifiBridge::generateRandomPassword(int length)
+{
+    const char* charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    String password = "";
+    
+    for (int i = 0; i < length; i++) {
+        int randomIndex = random(0, strlen(charset));
+        password += charset[randomIndex];
+    }
+    
+    return password;
+}
 
 bool WifiBridge::start()
 {
@@ -8,7 +20,10 @@ bool WifiBridge::start()
         return true;
 
     WiFi.mode(WIFI_AP);
-    if (!WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD))
+    
+    _password = generateRandomPassword(12);
+
+    if (!WiFi.softAP(WIFI_AP_SSID, _password.c_str(), 1, 1, 1))
     {
         Serial.println("[WIFI] softAP start failed");
         return false;
@@ -20,8 +35,9 @@ bool WifiBridge::start()
     _lastClientActivityMs = millis();
     _started = true;
 
-    Serial.printf("[WIFI] AP started: ssid=%s ip=%s port=%d\n",
+    Serial.printf("[WIFI] AP started: ssid=%s password=%s ip=%s port=%d\n",
                   WIFI_AP_SSID,
+                  _password.c_str(),
                   WiFi.softAPIP().toString().c_str(),
                   WIFI_TCP_PORT);
     return true;
@@ -128,7 +144,7 @@ String WifiBridge::buildStartResponse() const
     String response = "OK:WIFI:";
     response += WIFI_AP_SSID;
     response += ":";
-    response += WIFI_AP_PASSWORD;
+    response += _password;  // Az aktuális random jelszó
     response += ":";
     response += WiFi.softAPIP().toString();
     response += ":";

@@ -42,6 +42,97 @@ void BLEManager::startWifiTaskIfNeeded()
         &wifiTaskHandle,
         0);
 }
+
+// ═══════════════════════════════════════════════════════════════
+// CANMOD toggle task - periodikus CAN küldés
+// ═══════════════════════════════════════════════════════════════
+
+void BLEManager::canModTask(void* pvParameters)
+{
+    BLEManager* self = static_cast<BLEManager*>(pvParameters);
+    Serial.println("[CANMOD-TASK] Inditva");
+
+    while (true)
+    {
+        // Várakozunk, amíg aktív
+        if (!self->activeCanMsg.active)
+        {
+            break;
+        }
+
+        // Küldés 100ms-enként
+        bool ok = self->canSendCb(
+            self->activeCanMsg.canId,
+            self->activeCanMsg.canId > 0x7FF,  // extended
+            self->activeCanMsg.dlc,
+            self->activeCanMsg.data
+        );
+
+        if (!ok)
+        {
+            Serial.printf("[CANMOD-TASK] Küldés hiba: ID:%03X\n", self->activeCanMsg.canId);
+        }
+
+        uint32_t intervalMs = self->activeCanMsg.intervalMs;
+        if (intervalMs == 0)
+        {
+            intervalMs = 1;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(intervalMs));
+    }
+
+    // ✅ Atomi törlés
+    self->activeCanMsg.active = false;
+    TaskHandle_t h = self->canModTaskHandle;
+    self->canModTaskHandle = nullptr;
+    vTaskDelete(nullptr);
+}
+
+void BLEManager::startCanModTask()
+{
+    if (canModTaskHandle != nullptr) return;
+
+    xTaskCreatePinnedToCore(
+        canModTask,
+        "CANMOD-Periodic",
+        4096,
+        this,
+        3,  // Magasabb prioritás, mint a WiFi
+        &canModTaskHandle,
+        1   // Core 1 (WiFi is itt fut)
+    );
+}
+
+void BLEManager::stopCanModTask()
+{
+    activeCanMsg.active = false;
+    
+    // Várakozunk, amíg a task észreveszi és befejeződik
+    uint32_t timeout = millis() + 200;
+    while (canModTaskHandle != nullptr && (int32_t)(millis() - timeout) < 0)
+    {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    if (canModTaskHandle != nullptr)
+    {
+        vTaskDelete(canModTaskHandle);
+        canModTaskHandle = nullptr;
+    }
+}
+
+void BLEManager::handleCanModStop()
+{
+    if (activeCanMsg.active)
+    {
+        stopCanModTask();
+    }
+
+    sendNotification("OK:CANMOD_STOPPED");
+    Serial.println("[BLE] CANMOD leallitva");
+}
+
 void BLEManager::setDeviceRegistry(BleDevices* reg)
 {
     registry = reg;
@@ -233,9 +324,123 @@ void BLEManager::handleDeleteCommand(const String& value)
     Serial.printf("[BLE] Eszkoz torolve: [%d] %s\n", idx, name.c_str());
 }
 
-// "CAN:7DF:8:0122334455667788"
-// id hex, len dec, data hex (len*2 karakter)
-// ✅ Nem kell WiFi – közvetlenül a CAN buszra megy
+// "CANMOD:id:hexdata[:interval]" - Egy időben csak egy aktív üzenet lehet
+// Pl: CANMOD:200:A1B2C3D4E5F61234:100
+// Azonos ID esetén az aktív üzenet frissül.
+void BLEManager::handleCanSetdCommand(const String& value)
+{
+    if (!canSendCb)
+    {
+        sendNotification("ERR:NO_CAN_CB");
+        return;
+    }
+
+    if (value == "CANMOD:STOP" || value == "CANMOD:OFF")
+    {
+        handleCanModStop();
+        return;
+    }
+
+    // Parsing: CANMOD:id:hexdata[:interval]
+    int p1 = value.indexOf(':', 7);  // "CANMOD:" után
+    int p2 = value.lastIndexOf(':');
+
+    if (p1 < 0)
+    {
+        sendNotification("ERR:CANMOD_FORMAT");
+        return;
+    }
+
+    String idStr = value.substring(7, p1);
+    String hexData;
+    String intervalStr;
+
+    if (p2 > p1)
+    {
+        hexData = value.substring(p1 + 1, p2);
+        intervalStr = value.substring(p2 + 1);
+    }
+    else
+    {
+        hexData = value.substring(p1 + 1);
+    }
+
+    if (hexData.isEmpty())
+    {
+        sendNotification("ERR:CANMOD_DATA");
+        return;
+    }
+
+    uint32_t canId = (uint32_t)strtoul(idStr.c_str(), nullptr, 16);
+    bool extended = canId > 0x7FF;
+
+    uint32_t intervalMs = 100;
+    if (intervalStr.length() > 0)
+    {
+        intervalMs = (uint32_t)intervalStr.toInt();
+        if (intervalMs == 0)
+        {
+            sendNotification("ERR:CANMOD_INTERVAL");
+            return;
+        }
+    }
+
+    // Hex string hossza = dlc * 2 (8 báyt max = 16 hex karakter)
+    uint8_t dlc = hexData.length() / 2;
+    if (dlc > 8 || hexData.length() % 2 != 0)
+    {
+        sendNotification("ERR:CANMOD_DATA");
+        return;
+    }
+
+    uint8_t data[8] = {0};
+    for (uint8_t i = 0; i < dlc; i++)
+    {
+        char buf[3] = {hexData[i*2], hexData[i*2+1], 0};
+        data[i] = (uint8_t)strtoul(buf, nullptr, 16);
+    }
+
+    const bool sameIdActive = activeCanMsg.active && activeCanMsg.canId == canId;
+    const bool differentActiveId = activeCanMsg.active && activeCanMsg.canId != canId;
+
+    if (differentActiveId)
+    {
+        stopCanModTask();
+    }
+
+    // Egy időben csak egy aktív üzenet lehet, az azonos ID pedig frissül.
+    activeCanMsg.canId = canId;
+    activeCanMsg.dlc = dlc;
+    memcpy(activeCanMsg.data, data, dlc);
+    activeCanMsg.intervalMs = intervalMs;
+    activeCanMsg.active = true;
+
+    if (canModTaskHandle == nullptr)
+    {
+        startCanModTask();
+    }
+
+    if (sameIdActive)
+    {
+        sendNotification("OK:CANMOD_UPDATED");
+        Serial.printf("[BLE] CANMOD frissitve: ID:%03X len:%d interval:%lu\n",
+                      canId, dlc, (unsigned long)intervalMs);
+    }
+    else if (differentActiveId)
+    {
+        sendNotification("OK:CANMOD_REPLACED");
+        Serial.printf("[BLE] CANMOD csere: ID:%03X len:%d interval:%lu\n",
+                      canId, dlc, (unsigned long)intervalMs);
+    }
+    else
+    {
+        sendNotification("OK:CANMOD_STARTED");
+        Serial.printf("[BLE] CANMOD bekapcsolt: ID:%03X len:%d interval:%lu\n",
+                      canId, dlc, (unsigned long)intervalMs);
+    }
+}
+
+
 void BLEManager::handleCanSendCommand(const String& value)
 {
     if (!canSendCb)
@@ -245,9 +450,8 @@ void BLEManager::handleCanSendCommand(const String& value)
     }
 
     // Parsing: CAN:id:len:hexdata
-    int p1 = value.indexOf(':', 4);  // "CAN:" után
+    int p1 = value.indexOf(':', 4);  // "CAN:" után az ID-t lezáró kettőspont
     int p2 = value.indexOf(':', p1 + 1);
-    int p3 = value.indexOf(':', p2 + 1);
 
     if (p1 < 0 || p2 < 0)
     {
@@ -257,7 +461,7 @@ void BLEManager::handleCanSendCommand(const String& value)
 
     String idStr   = value.substring(4, p1);
     String lenStr  = value.substring(p1 + 1, p2);
-    String hexData = (p3 >= 0) ? value.substring(p2 + 1) : value.substring(p2 + 1);
+    String hexData = value.substring(p2 + 1);
 
     uint32_t canId   = (uint32_t)strtoul(idStr.c_str(), nullptr, 16);
     uint8_t  dlc     = (uint8_t)lenStr.toInt();
@@ -281,6 +485,7 @@ void BLEManager::handleCanSendCommand(const String& value)
 
     Serial.printf("[BLE->CAN] ID:%03X len:%d %s\n", canId, dlc, ok ? "OK" : "FAIL");
 }
+
 
 void BLEManager::handleWifiStart()
 {
@@ -395,6 +600,13 @@ void BLEManager::onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int 
     // ✅ Ha nincsen más kliens csatlakozva, leállítjuk a WiFi-t (felesleges fogyasztás)
     if (pServer->getConnectedCount() == 0)
     {
+        // Leállítjuk az aktív CANMOD küldést is
+        if (activeCanMsg.active)
+        {
+            stopCanModTask();
+            Serial.println("[CANMOD] Auto leállítva - nincsen BLE kliens");
+        }
+
         if (wifiBridge.isStarted())
         {
             wifiBridge.stop();
@@ -489,8 +701,10 @@ void BLEManager::onWrite(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo)
     // ── Parancsok ────────────────────────────────────────────
     if (value == "LIST")               { handleListCommand();         return; }
     if (value.startsWith("DEL:"))      { handleDeleteCommand(value);  return; }
-    if (value.startsWith("CAN:"))      { handleCanSendCommand(value); return; }
     if (value.startsWith("CANSPEED:")) { handleCanSpeedCommand(value); return; }
+    if (value == "CANMOD:STOP" || value == "CANMOD:OFF") { handleCanModStop(); return; }
+    if (value.startsWith("CANMOD:"))  { handleCanSetdCommand(value); return; }
+    if (value.startsWith("CAN:"))      { handleCanSendCommand(value); return; }
     if (value == "WIFI:START")         { handleWifiStart();           return; }
     if (value == "WIFI:STOP")          { handleWifiStop();            return; }
     if (value == "CLEAR")              { clearBonds(); sendNotification("OK:CLEARED"); return; }

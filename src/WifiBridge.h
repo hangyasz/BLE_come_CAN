@@ -5,7 +5,7 @@
 #include "driver/twai.h"
 
 
-#include "config.h"
+#include "Config.h"
 
 class WifiBridge {
 public:
@@ -23,4 +23,7 @@ private:
     WiFiClient _client;
     uint32_t _lastHelloSentMs = 0;
     uint32_t _lastClientActivityMs = 0;
+    String _password;  // Az aktuális random jelszó
+    
+    String generateRandomPassword(int length = 12);
 };

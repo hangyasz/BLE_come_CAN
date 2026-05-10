@@ -1,32 +1,32 @@
 #include "CanTask.h"
 
-// 📌 Itt foglaljuk le a memóriát a Queue-nak
+
+// Globális queue a beérkező CAN üzenetekhez.
 QueueHandle_t canRxQueue = NULL;
 
-// ── CAN RX FreeRTOS Task ───────────────────────────────────────
+
 void canRxTask(void *pvParameters) {
-    // 1. Visszakapjuk a BLEManager pointert a paraméterből
+    // A task paramétereként átadott BLEManager pointer visszaállítása.
     BLEManager* bleManagerPtr = static_cast<BLEManager*>(pvParameters);
 
-    // 2. Létrehozzuk a Queue-t (100 db CAN üzenet fér bele)
+    // Queue létrehozása: legfeljebb 100 db twai_message_t elem.
     canRxQueue = xQueueCreate(100, sizeof(twai_message_t));
     twai_message_t rx_msg;
     
     while(1) {
-        // Csak akkor olvassuk a CAN-t, ha van csatlakozott telefon
+        // Csak aktív WiFi kliens esetén olvassunk CAN-t,
         if (bleManagerPtr->iswifiactive()) { 
             
-            // Olvasás a CAN vezérlőből (10 ms timeout)
+            // Olvasás a TWAI vezérlőből 10 ms timeouttal.
             if (twai_receive(&rx_msg, pdMS_TO_TICKS(10)) == ESP_OK) {
-                // Betoljuk a Queue-ba. Ha tele van, eldobjuk.
                 xQueueSend(canRxQueue, &rx_msg, 0);
             }
             
         } else {
-            // Nincs kliens: Alszunk 100ms-t, hogy ne fogyasszunk áramot
+
             vTaskDelay(pdMS_TO_TICKS(100));
             
-            // Kiürítjük a puffert, hogy tiszta lappal induljunk
+            // Queue ürítése, hogy új kliensnél ne régi keretek menjenek ki.
             if (canRxQueue != NULL) {
                 xQueueReset(canRxQueue);
             }
@@ -34,25 +34,28 @@ void canRxTask(void *pvParameters) {
     }
 }
 
-// ── Indító függvény ────────────────────────────────────────────
+// CAN vételi task indítása az 1-es magon.
+// Stack: 4096 byte, prioritás: 5.
 void startCanTask(BLEManager* manager) {
     xTaskCreatePinnedToCore(
         canRxTask, 
         "CAN_RX", 
         4096, 
-        manager, // ✅ Itt adjuk át a tasknak a manager pointert!
+        manager, // A task paramétere (BLEManager pointer)
         5, 
         NULL, 
         1
     );
 }
 
-// ── CAN Inicializálás ──────────────────────────────────────────
+// TWAI (CAN) periféria inicializálása a kért sebességgel.
+// Támogatott sebességek: 125k, 250k, 500k, 1M bit/s.
 bool initCan(uint32_t speed) {
-    // Ide tedd be a konfigurációs logikát (a pinek legyenek definiálva itt vagy a config.h-ban)
+    // Általános TWAI konfiguráció (TX/RX pinek + normál mód).
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(
-        GPIO_NUM_17, GPIO_NUM_16, TWAI_MODE_NORMAL); // Cseréld a makróidra (CAN_TX, CAN_RX)
+        GPIO_NUM_17, GPIO_NUM_16, TWAI_MODE_NORMAL);
 
+    // Időzítési konfiguráció kiválasztása baudrate alapján.
     twai_timing_config_t t_config;
     switch (speed) {
         case 125000:  t_config = TWAI_TIMING_CONFIG_125KBITS(); break;
@@ -62,6 +65,7 @@ bool initCan(uint32_t speed) {
         default: return false;
     }
 
+    // Szűrő: minden bejövő CAN keretet elfogad.
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
     if (twai_driver_install(&g_config, &t_config, &f_config) != ESP_OK) return false;

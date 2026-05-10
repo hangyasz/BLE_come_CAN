@@ -4,21 +4,28 @@
 #include <Preferences.h>
 #include <array>
 #include <cstring>
-#include "config.h"
+#include "Config.h"
 
-// Mac cím alapú eszközinformáció
+
+// Perzisztens BLE eszközlista tárolás
+
+
+// MAC cím alapú eszközinformáció.
+// Fix méretű struktúra, hogy egyszerűen menthető legyen bináris formában.
 struct DeviceRecord {
-    esp_bd_addr_t mac;  // 6 bájtos MAC cím
-    char    name[33];   // Max 32 char + null};
+    esp_bd_addr_t mac;  // 6 bájtos BLE MAC cím
+    char name[33];      // Max 32 karakter + lezáró '\0'
 };
 
 class BleDeviceStore {
 private:
     Preferences prefs;
+    // NVS namespace és kulcs, ahol a rekordok tárolódik.
     static constexpr const char* kNamespace  = "ble_store";
     static constexpr const char* kRecordsKey = "records";
 
 public:
+    // Eszközlista mentése NVS-be.
     bool saveDevices(const std::array<DeviceRecord, BLE_MAX_STORED>& devices, size_t count) {
         if (!prefs.begin(kNamespace, false)) {
             Serial.println("[STORE] open rw failed");
@@ -44,6 +51,7 @@ public:
         return true;
     }
 
+    // Eszközlista betöltése NVS-ből.
     bool loadDevices(std::array<DeviceRecord, BLE_MAX_STORED>& records, size_t& outCount) {
         outCount = 0;
 
@@ -58,6 +66,7 @@ public:
             return true;
         }
 
+        // A blob mérete csak akkor jó, ha pontosan rekordméret többszöröse.
         if ((bytes % sizeof(DeviceRecord)) != 0) {
             Serial.println("[STORE] invalid blob – törölve");
             prefs.end();
@@ -69,6 +78,7 @@ public:
 
         size_t recordCount = bytes / sizeof(DeviceRecord);
         if (recordCount > BLE_MAX_STORED) {
+            // Védőkorlát: sosem olvasunk a lokális tömb kapacitásán túl.
             recordCount = BLE_MAX_STORED;
         }
 
@@ -77,6 +87,7 @@ public:
         prefs.end();
 
         if (r != readBytes) {
+            // Részleges olvasás esetén inkább hibát adunk vissza.
             outCount = 0;
             return false;
         }

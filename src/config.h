@@ -11,10 +11,7 @@
 
 // --- Wi-Fi AP + TCP stream --------------------------------
 #define WIFI_AP_SSID            "ESP32_Sniffer"
-#define WIFI_AP_PASSWORD        "TitkosWifi123"
 #define WIFI_TCP_PORT           23
-#define WIFI_HELLO_INTERVAL_MS  10
-#define WIFI_HELLO_MESSAGE      "hello wifi\n"
 #define WIFI_InACTIVITY_TIMEOUT_MS  60000 // 1 perc inaktivitás után WiFi AP leállítása
 
 // --- CAN (TWAI) pinout -------------------------------------

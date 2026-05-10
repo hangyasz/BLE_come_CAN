@@ -6,7 +6,7 @@
 #include <NimBLEAdvertising.h>
 #include "BleDevices.h"
 #include "WifiBridge.h"
-#include "config.h"
+#include "Config.h"
 
 // CAN küldés callback – így a BLEManager nem függ közvetlenül a TWAI-tól
 typedef bool (*CanSendCallback)(uint32_t id, bool extended, uint8_t len, uint8_t* data);
@@ -54,10 +54,25 @@ private:
     void startWifiTaskIfNeeded();
     static void wifiTickTask(void* pvParameters);
 
+    // ── CANMOD toggle (periodikus küldés) ──────────────────
+    struct {
+        bool active = false;
+        uint32_t canId = 0;
+        uint8_t dlc = 0;
+        uint8_t data[8] = {0};
+        uint32_t intervalMs = 100;
+    } activeCanMsg;
+    TaskHandle_t canModTaskHandle = nullptr;
+    void startCanModTask();
+    void stopCanModTask();
+    static void canModTask(void* pvParameters);
+
     // ── Parancs feldolgozók ───────────────────────────────
     void handleListCommand();
     void handleDeleteCommand(const String& value);
     void handleCanSendCommand(const String& value);
+    void handleCanSetdCommand(const String& value);  // Toggle CANMOD
+    void handleCanModStop();
     void handleWifiStart();
     void handleWifiStop();
     void handleNameWrite(const String& value, NimBLEConnInfo& connInfo);
