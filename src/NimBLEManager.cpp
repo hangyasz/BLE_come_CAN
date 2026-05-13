@@ -1,11 +1,11 @@
 #include "NimBLEManager.h"
+#include "CanTask.h"
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
-// ═══════════════════════════════════════════════════════════════
-// WiFi task
-// ═══════════════════════════════════════════════════════════════
+// WiFi háttér task
+// A WiFi bridge tick-je külön taskban fut, hogy ne blokkolja a BLE-t.
 
 void BLEManager::wifiTickTask(void* pvParameters)
 {
@@ -14,6 +14,7 @@ void BLEManager::wifiTickTask(void* pvParameters)
 
     while (true)
     {
+        // Ha a WiFi bridge már nem fut, a taskot is lezárjuk.
         if (!self->wifiBridge.isStarted())
         {
             Serial.println("[WIFI-TASK] WiFi leallt, task leall");
@@ -23,7 +24,7 @@ void BLEManager::wifiTickTask(void* pvParameters)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    // ✅ Atomi törlés: előbb nullázunk, aztán töröljük a taskot
+    // Atomi lezárás: a handle nullázása után megszüntetjük a taskot.
     TaskHandle_t h = self->wifiTaskHandle;
     self->wifiTaskHandle = nullptr;
     vTaskDelete(nullptr);
@@ -31,21 +32,20 @@ void BLEManager::wifiTickTask(void* pvParameters)
 
 void BLEManager::startWifiTaskIfNeeded()
 {
+    // Csak egy WiFi tick task futhat egyszerre.
     if (wifiTaskHandle != nullptr) return;
 
     xTaskCreatePinnedToCore(
         wifiTickTask,
         "WIFI-Tick",
         8192,
-        this,          // ✅ this-t adjuk át, nem globális pointert
+        this,
         2,
         &wifiTaskHandle,
         0);
 }
 
-// ═══════════════════════════════════════════════════════════════
-// CANMOD toggle task - periodikus CAN küldés
-// ═══════════════════════════════════════════════════════════════
+// CANMOD task: ismétlődő CAN küldés egy megadott időközönként.
 
 void BLEManager::canModTask(void* pvParameters)
 {
@@ -54,13 +54,13 @@ void BLEManager::canModTask(void* pvParameters)
 
     while (true)
     {
-        // Várakozunk, amíg aktív
+        // Ha a mód már inaktív, a task kilép.
         if (!self->activeCanMsg.active)
         {
             break;
         }
 
-        // Küldés 100ms-enként
+        // A jelenleg tárolt CAN üzenet továbbítása.
         bool ok = self->canSendCb(
             self->activeCanMsg.canId,
             self->activeCanMsg.canId > 0x7FF,  // extended
@@ -82,15 +82,17 @@ void BLEManager::canModTask(void* pvParameters)
         vTaskDelay(pdMS_TO_TICKS(intervalMs));
     }
 
-    // ✅ Atomi törlés
+    // Atomi lezárás.
     self->activeCanMsg.active = false;
     TaskHandle_t h = self->canModTaskHandle;
     self->canModTaskHandle = nullptr;
     vTaskDelete(nullptr);
 }
 
+// CANMOD task indítása a jelenleg tárolt CAN üzenettel.
 void BLEManager::startCanModTask()
 {
+    // Egy CANMOD task elég egyszerre.
     if (canModTaskHandle != nullptr) return;
 
     xTaskCreatePinnedToCore(
@@ -104,11 +106,12 @@ void BLEManager::startCanModTask()
     );
 }
 
+// CANMOD task leállítása
 void BLEManager::stopCanModTask()
 {
     activeCanMsg.active = false;
     
-    // Várakozunk, amíg a task észreveszi és befejeződik
+    // Röviden várunk, hogy a task észrevegye az inaktív állapotot.
     uint32_t timeout = millis() + 200;
     while (canModTaskHandle != nullptr && (int32_t)(millis() - timeout) < 0)
     {
@@ -122,6 +125,7 @@ void BLEManager::stopCanModTask()
     }
 }
 
+// CANMOD leállítása a BLE parancsból
 void BLEManager::handleCanModStop()
 {
     if (activeCanMsg.active)
@@ -132,17 +136,19 @@ void BLEManager::handleCanModStop()
     sendNotification("OK:CANMOD_STOPPED");
     Serial.println("[BLE] CANMOD leallitva");
 }
-
+// eszközregiszter beállítása a párosított eszközök kezeléséhez.
 void BLEManager::setDeviceRegistry(BleDevices* reg)
 {
     registry = reg;
 }
 
+// CAN küldés callback beállítása.
 void BLEManager::setCanSendCallback(CanSendCallback cb)
 {
     canSendCb = cb;
 }
 
+// Inicializálás, periodikus tick és vezérlő parancsok.
 void BLEManager::init()
 {
     NimBLEDevice::init(BLE_DEVICE_NAME);
@@ -152,6 +158,7 @@ void BLEManager::init()
     pServer->setCallbacks(this);
 
     pService = pServer->createService(SERVICE_UUID);
+    //A karakterisztika létrehozása
     pCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID,
         NIMBLE_PROPERTY::READ  | NIMBLE_PROPERTY::READ_ENC  |
@@ -163,9 +170,8 @@ void BLEManager::init()
     pCharacteristic->setValue("READY");
 
     advertising = NimBLEDevice::getAdvertising();
-    // ✅ NE hirdessük meg a Service UUID-t az advertising-ban
-    // Az app már ismeri az UUID-ket, csak a név alapján csatlakozik
     advertising->enableScanResponse(false);
+     // Alapértelmezett helyet csak a név megjelenítése, UUID rejtése.
     advertising->setName(BLE_DEVICE_NAME);
     advertising->setScanFilter(false, false);
     advertising->start();
@@ -174,6 +180,7 @@ void BLEManager::init()
 }
 
 
+// Periodikus tick, amely kezeli a párosítási és névkérési időablakokat.
 void BLEManager::tick()
 {
     if (!pairingWindowOpen && !waitingForName) return;
@@ -200,11 +207,9 @@ void BLEManager::tick()
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Párosítás kezelés
-// ═══════════════════════════════════════════════════════════════
 
-void BLEManager::startPairing()  // ✅ Javított elírás
+// Párosítási ablak megnyitása, meglévő kapcsolatok bontása, újraindított advertising.
+void BLEManager::startPairing()
 {
     if (!advertising) return;
 
@@ -233,6 +238,7 @@ void BLEManager::startPairing()  // ✅ Javított elírás
     pairingWindowEndMs = millis() + PAIRING_WINDOW_MS;
 }
 
+// BLE leállítása, kapcsolatok bontása, párosítási állapot visszaállítása.
 void BLEManager::stopBLE()
 {
     if (advertising) advertising->stop();
@@ -240,6 +246,7 @@ void BLEManager::stopBLE()
     Serial.println("[BLE] Leallitva");
 }
 
+// Minden kapcsolat bontása, bond-ok törlése és párosítási állapot visszaállítása.
 void BLEManager::clearBonds()
 {
     if (pServer && pServer->getConnectedCount() > 0)
@@ -256,11 +263,9 @@ void BLEManager::clearBonds()
     Serial.println("[BLE] Minden bond es eszkoz torolve");
 }
 
-// ═══════════════════════════════════════════════════════════════
 // BLE parancsok
-// ═══════════════════════════════════════════════════════════════
 
-// "LIST" → "DEVICES:name1@mac1;name2@mac2" vagy "DEVICES:EMPTY"
+// "LIST" parancs: a regisztrált eszközök listázása.
 void BLEManager::handleListCommand()
 {
     String resp = "DEVICES:";
@@ -286,7 +291,7 @@ void BLEManager::handleListCommand()
 
 
 
-// "DEL:0" → töröl index alapján, bond is törlődik
+// törölés index alapján, bond is törlődik.
 void BLEManager::handleDeleteCommand(const String& value)
 {
     if (!registry)
@@ -306,7 +311,7 @@ void BLEManager::handleDeleteCommand(const String& value)
     const DeviceRecord& d = registry->at(idx);
     NimBLEAddress addr(d.mac, BLE_ADDR_PUBLIC);
 
-    // ✅ Bond törlése NimBLE-ből is
+    //Bond törlése NimBLE-ből is
     NimBLEDevice::deleteBond(addr);
 
     // Ha éppen ez az eszköz van csatlakozva, bontsuk a kapcsolatot
@@ -324,7 +329,7 @@ void BLEManager::handleDeleteCommand(const String& value)
     Serial.printf("[BLE] Eszkoz torolve: [%d] %s\n", idx, name.c_str());
 }
 
-// "CANMOD:id:hexdata[:interval]" - Egy időben csak egy aktív üzenet lehet
+// "CANMOD:id:hexdata[:interval]" - Egy időben csak egy aktív üzenet lehet.
 // Pl: CANMOD:200:A1B2C3D4E5F61234:100
 // Azonos ID esetén az aktív üzenet frissül.
 void BLEManager::handleCanSetdCommand(const String& value)
@@ -341,7 +346,7 @@ void BLEManager::handleCanSetdCommand(const String& value)
         return;
     }
 
-    // Parsing: CANMOD:id:hexdata[:interval]
+    // Parse: CANMOD:<id>:<hexdata>[:interval]
     int p1 = value.indexOf(':', 7);  // "CANMOD:" után
     int p2 = value.lastIndexOf(':');
 
@@ -385,7 +390,7 @@ void BLEManager::handleCanSetdCommand(const String& value)
         }
     }
 
-    // Hex string hossza = dlc * 2 (8 báyt max = 16 hex karakter)
+    // Hex string hossza = dlc * 2 (8 bájt max = 16 hex karakter)
     uint8_t dlc = hexData.length() / 2;
     if (dlc > 8 || hexData.length() % 2 != 0)
     {
@@ -440,7 +445,7 @@ void BLEManager::handleCanSetdCommand(const String& value)
     }
 }
 
-
+// CAN üzenet küldése a regisztrált callback-en keresztül.
 void BLEManager::handleCanSendCommand(const String& value)
 {
     if (!canSendCb)
@@ -449,7 +454,7 @@ void BLEManager::handleCanSendCommand(const String& value)
         return;
     }
 
-    // Parsing: CAN:id:len:hexdata
+        // Parse: CAN:<id>:<len>:<hexdata>
     int p1 = value.indexOf(':', 4);  // "CAN:" után az ID-t lezáró kettőspont
     int p2 = value.indexOf(':', p1 + 1);
 
@@ -480,39 +485,48 @@ void BLEManager::handleCanSendCommand(const String& value)
         data[i] = (uint8_t)strtoul(buf, nullptr, 16);
     }
 
+    // A tényleges CAN küldést a main.cpp-ben regisztrált callback végzi.
     bool ok = canSendCb(canId, extended, dlc, data);
     sendNotification(ok ? "OK:CAN_SENT" : "ERR:CAN_FAIL");
 
     Serial.printf("[BLE->CAN] ID:%03X len:%d %s\n", canId, dlc, ok ? "OK" : "FAIL");
 }
 
-
+// WiFi parancsok
 void BLEManager::handleWifiStart()
 {
+    // Ha a WiFi már fut, csak visszaküldjük az aktuális paramétereket.
     if (wifiBridge.isStarted())
     {
+        startCanTask(this);
         sendNotification(wifiBridge.buildStartResponse());
         return;
     }
 
+    // Első indulás: WiFi AP létrehozása.
     if (!wifiBridge.start())
     {
         sendNotification("ERR:WIFI_START");
         return;
     }
 
+    // WiFi mellé induljon a CAN és a hozzá tartozó tick task is.
+    startCanTask(this);
     startWifiTaskIfNeeded();
     sendNotification(wifiBridge.buildStartResponse());
     Serial.println("[WIFI] Elindult");
 }
 
+// WiFi leállítása, CAN task leállítása, értesítés küldése.
 void BLEManager::handleWifiStop()
 {
+    stopCanTask();
     wifiBridge.stop();
     sendNotification("OK:WIFI_STOPPED");
     Serial.println("[WIFI] Leallitva");
 }
 
+// CAN sebesség módosítása: TWAI driver újrainicializálása az új sebességgel.
 void BLEManager::handleCanSpeedCommand(String value)
 {
     // A "CANSPEED:" szöveg eltávolítása, hogy csak a szám maradjon
@@ -546,10 +560,7 @@ void BLEManager::handleCanSpeedCommand(String value)
 }
 
 
-// ═══════════════════════════════════════════════════════════════
-// Értesítés küldés
-// ═══════════════════════════════════════════════════════════════
-
+// BLE értesítés küldése a csatlakoztatott kliensnek.
 void BLEManager::sendNotification(const String& message)
 {
     if (!pCharacteristic || !pServer) return;
@@ -561,19 +572,18 @@ void BLEManager::sendNotification(const String& message)
 }
 
 
-// ═══════════════════════════════════════════════════════════════
-// NimBLE callbacks
-// ═══════════════════════════════════════════════════════════════
+// NimBLE callback-ek ha valiki csatlakozik akkor ó hivodik meg
 
 void BLEManager::onConnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo)
 {
+    // Új BLE kliens kapcsolódott.
     Serial.printf("[BLE] Csatlakozott: %s\n", connInfo.getAddress().toString().c_str());
     NimBLEDevice::stopAdvertising();
     
     connectedHandle = connInfo.getConnHandle();
     connectedAddr   = connInfo.getIdAddress();
     
-    // ✅ Azonnal ellenőrizzük, hogy ismert eszköz-e
+    // Azonnal ellenőrizzük, hogy ismert eszköz-e.
     if (registry && registry->containsMac(connectedAddr.getVal()))
     {
         Serial.printf("[AUTH] Ismert eszkoz visszacsatlakozva: %s\n", connectedAddr.toString().c_str());
@@ -581,23 +591,24 @@ void BLEManager::onConnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo)
         pairingWindowEndMs = 0;
         waitingForName     = false;
         nameWindowEndMs    = 0;
-        // Rövid delay az enkriptálás időzítéséhez
         vTaskDelay(pdMS_TO_TICKS(50));
         sendNotification("OK:WELCOME_BACK");
     }
 }
 
+// NimBLE callback ha valaki lecsatlakozik, vagy a párosítási ablak lejár, akkor meghívódik
 void BLEManager::onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int reason)
 {
+    // A kliens megszakította a kapcsolatot.
     Serial.printf("[BLE] Lecsatlakozott (reason: %d)\n", reason);
 
-    // ✅ Csak akkor resetelünk, ha ez a mi aktív párosítási kapcsolatunk volt
+    // Csak akkor resetelünk, ha ez a mi aktív párosítási kapcsolatunk volt.
     if (connectedHandle == connInfo.getConnHandle())
     {
         resetPairingState();
     }
 
-    // ✅ Ha nincsen más kliens csatlakozva, leállítjuk a WiFi-t (felesleges fogyasztás)
+    // Ha nincsen más kliens csatlakozva, leállítjuk a WiFi-t.
     if (pServer->getConnectedCount() == 0)
     {
         // Leállítjuk az aktív CANMOD küldést is
@@ -609,6 +620,7 @@ void BLEManager::onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int 
 
         if (wifiBridge.isStarted())
         {
+            stopCanTask();
             wifiBridge.stop();
             Serial.println("[WIFI] Auto leállítva - nincsen BLE kliens");
         }
@@ -617,6 +629,7 @@ void BLEManager::onDisconnect(NimBLEServer* pSrv, NimBLEConnInfo& connInfo, int 
     if (advertising) advertising->start();
 }
 
+// NimBLE callback a párosítási PIN kód megjelenítéséhez és generálásához.
 uint32_t BLEManager::onPassKeyDisplay()
 {
     uint32_t pin = (esp_random() % 900000) + 100000;
@@ -624,22 +637,25 @@ uint32_t BLEManager::onPassKeyDisplay()
     return pin;
 }
 
-void BLEManager::onConfirmPassKey(NimBLEConnInfo& connInfo, uint32_t pin) // ✅ override a headerben
+// NimBLE callback a párosítási PIN kód megerősítéséhez.
+void BLEManager::onConfirmPassKey(NimBLEConnInfo& connInfo, uint32_t pin)
 {
     Serial.printf("[BLE] PIN confirmation: %06u\n", pin);
     NimBLEDevice::injectConfirmPasskey(connInfo, true);
 }
 
-void BLEManager::onAuthenticationComplete(NimBLEConnInfo& connInfo) // ✅ override a headerben
+// NimBLE callback az autentikáció befejezéséhez, ahol eldől, hogy az eszköz engedélyezett-e.
+void BLEManager::onAuthenticationComplete(NimBLEConnInfo& connInfo)
 {
+    // Az autentikáció végeztével döntjük el, hogy az eszköz engedélyezett-e.
     if (!registry)
     {
         pServer->disconnect(connInfo.getConnHandle());
         return;
     }
 
-    // ✅ Az ismert eszközöket már az onConnect()-ben kezeljük
-    // Ez csak az ÚJ eszközöknél hívódik meg az autentikáció után
+    // Az ismert eszközöket már az onConnect()-ben kezeljük.
+    // Ez csak az új eszközöknél fut le az autentikáció után.
     
     if (connectedAddr != connInfo.getIdAddress())
     {
@@ -654,7 +670,7 @@ void BLEManager::onAuthenticationComplete(NimBLEConnInfo& connInfo) // ✅ overr
         return;
     }
 
-    // Új eszköz - csak ha a párosítási ablak nyitva van
+    // Új eszköz csak akkor jöhet be, ha a párosítási ablak nyitva van.
     if (!pairingWindowOpen)
     {
         Serial.println("[AUTH] Párosítási ablak zárt, új eszköz nem engedélyezett");
@@ -671,13 +687,15 @@ void BLEManager::onAuthenticationComplete(NimBLEConnInfo& connInfo) // ✅ overr
         return;
     }
 
-    // Új eszköz – névkérés
+    // Új eszköz: név bekérése.
     Serial.println("[AUTH] Uj eszkoz parositva, nev kerese...");
     waitingForName  = true;
     nameWindowEndMs = millis() + NAME_REQUEST_TIMEOUT_MS;
     sendNotification("REQUEST_NAME");
 }
 
+
+// NimBLE callback a karakterisztika olvasásához és írásához.
 void BLEManager::onRead(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo)
 {
     Serial.printf("[BLE<-] Read: %s\n", connInfo.getAddress().toString().c_str());
@@ -698,11 +716,10 @@ void BLEManager::onWrite(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo)
         return;
     }
 
-    // ── Parancsok ────────────────────────────────────────────
+    //Parancsok 
     if (value == "LIST")               { handleListCommand();         return; }
     if (value.startsWith("DEL:"))      { handleDeleteCommand(value);  return; }
     if (value.startsWith("CANSPEED:")) { handleCanSpeedCommand(value); return; }
-    if (value == "CANMOD:STOP" || value == "CANMOD:OFF") { handleCanModStop(); return; }
     if (value.startsWith("CANMOD:"))  { handleCanSetdCommand(value); return; }
     if (value.startsWith("CAN:"))      { handleCanSendCommand(value); return; }
     if (value == "WIFI:START")         { handleWifiStart();           return; }
@@ -713,12 +730,11 @@ void BLEManager::onWrite(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo)
 }
 
 
-// ═══════════════════════════════════════════════════════════════
-// Névírás kezelése
-// ═══════════════════════════════════════════════════════════════
+// A párosított eszköz nevét várjuk, formátum: "N:<név>".
 
 void BLEManager::handleNameWrite(const String& value, NimBLEConnInfo& connInfo)
 {
+    // Csak "N:<név>" formátumot fogadunk el.
     if (!value.startsWith("N:"))
     {
         Serial.println("[AUTH] Rossz formatum, vart N:nev");
@@ -742,8 +758,8 @@ void BLEManager::handleNameWrite(const String& value, NimBLEConnInfo& connInfo)
     sendNotification("OK:PAIRED:" + name);
     Serial.printf("[AUTH] Parositva: %s\n", name.c_str());
 
-    // Csak a névkérési ablakot zárjuk, de a párosítási ablak marad nyitva
-    // hogy az ismert eszközök is tudjanak csatlakozni az ablak alatt
+    // Csak a névkérési ablakot zárjuk, de a párosítási ablak marad nyitva,
+    // hogy az ismert eszközök is tudjanak csatlakozni az ablak alatt.
     waitingForName     = false;
     nameWindowEndMs    = 0;
     pairingWindowOpen  = false;
@@ -751,12 +767,10 @@ void BLEManager::handleNameWrite(const String& value, NimBLEConnInfo& connInfo)
 }
 
 
-// ═══════════════════════════════════════════════════════════════
-// Segédfüggvények
-// ═══════════════════════════════════════════════════════════════
-
+// Kapcsolat bontása, bond törlése (ha szükséges) és párosítási állapot visszaállítása.
 void BLEManager::disconnectAndCleanup(bool deleteBond)
 {
+    // Kapcsolat bontása és opcionális bond törlés.
     if (connectedHandle == BLE_HS_CONN_HANDLE_NONE) return;
 
     if (deleteBond)
@@ -765,9 +779,10 @@ void BLEManager::disconnectAndCleanup(bool deleteBond)
     pServer->disconnect(connectedHandle);
 }
 
-
+// Párosítási állapot visszaállítása: minden flag és változó alaphelyzetbe kerül.
 void BLEManager::resetPairingState()
 {
+    // Minden párosítási és kapcsolat állapot alaphelyzetbe kerül.
     pairingWindowOpen  = false;
     pairingWindowEndMs = 0;
     waitingForName     = false;
@@ -776,9 +791,11 @@ void BLEManager::resetPairingState()
     connectedHandle    = BLE_HS_CONN_HANDLE_NONE;
 }
 
-// ✅ Dupla hívás eltávolítva
+
+// BLE biztonsági paraméterek beállítása: MITM védelem, bonding és kulcscsere.
 void BLEManager::bleSecurity()
 {
+    // BLE biztonsági paraméterek: MITM, bonding és kulcscsere.
     NimBLEDevice::setSecurityAuth(
         BLE_SM_PAIR_AUTHREQ_SC |
         BLE_SM_PAIR_AUTHREQ_MITM |
@@ -786,15 +803,23 @@ void BLEManager::bleSecurity()
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
     NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
     NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
-    // ✅ Nem rögzítjük a PIN-t, hanem hagyunk az onPassKeyDisplay() callback-et működni
 }
 
+
+// Állapot lekérdezése a fő loop-ban, hogy szükséges-e a tick() meghívása.
 bool BLEManager::isPairingActive()
 {
     return pairingWindowOpen || waitingForName;
 }
 
-bool BLEManager::iswifiactive()
+// Állapot lekérdezése a fő loop-ban, hogy szükséges-e a WiFi tick() meghívása.
+bool BLEManager::isWifiActive()
 {
     return wifiBridge.isClientConnected();
+}
+
+// Állapot lekérdezése a fő loop-ban, hogy szükséges-e a CANMOD tick() meghívása.
+bool BLEManager::isWifiStarted()
+{
+    return wifiBridge.isStarted();
 }
